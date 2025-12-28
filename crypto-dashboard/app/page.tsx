@@ -21,6 +21,7 @@ export default function Dashboard() {
    const [stats, setStats] = useState<any>({});
    const [trades, setTrades] = useState<any[]>([]);
    const [positions, setPositions] = useState<Position[]>([]);
+   const [signals, setSignals] = useState<any[]>([]); // [NEW] Signal diagnostics
    const [loading, setLoading] = useState(false);
 
    const [slEdits, setSlEdits] = useState<Record<string, string>>({});
@@ -39,23 +40,24 @@ export default function Dashboard() {
 
    const loadData = async () => {
       try {
-         const [s, t, p, cfg] = await Promise.all([
+         const [s, t, p, cfg, sigs] = await Promise.all([
             fetch(`${API}/stats`).then(r => r.json()),
             fetch(`${API}/trades`).then(r => r.json()),
             fetch(`${API}/positions`).then(r => r.json()),
             fetch(`${API}/admin/trade-usd`).then(r => r.json()),
+            fetch(`${API}/signals`).then(r => r.json())
          ]);
-
-         setStats(s ?? {});
-         setTrades(Array.isArray(t) ? t : []);
-         setPositions(Array.isArray(p) ? p : []);
-
-         const serverUsd = String(cfg?.trade_usd ?? 10);
-         setTradeUsd(Number(serverUsd));
-         if (!editingTradeUsd) setTradeUsdDraft(serverUsd);
+         setStats(s);
+         setTrades(t);
+         setPositions(p);
+         setTradeUsd(cfg.trade_usd);
+         setTradeUsdDraft(String(cfg.trade_usd));
+         setSignals(Array.isArray(sigs) ? sigs : []);
 
          setLastSync(new Date().toUTCString());
-      } catch { }
+      } catch (e) {
+         console.error("Load failed", e);
+      }
    };
 
    useEffect(() => {
@@ -198,10 +200,13 @@ export default function Dashboard() {
                }`}>
                <div className="flex flex-col md:flex-row items-end gap-2 mb-6">
                   <div>
-                     <p className={`text-sm font-semibold uppercase tracking-wider mb-2 ${isDark ? "text-slate-400" : "text-gray-400"}`}>Total Portfolio Value</p>
+                     <p className={`text-sm font-semibold uppercase tracking-wider mb-2 ${isDark ? "text-slate-400" : "text-gray-400"}`}>Total Portfolio Value (Live)</p>
                      <div className={`text-6xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}>
                         {toUSD(stats.balance)}
                      </div>
+                  </div>
+                  <div className="mb-2 text-xs font-mono text-slate-500 bg-white/5 px-2 py-1 rounded">
+                     Synced: {new Date(lastSync).toLocaleTimeString()} IST
                   </div>
                </div>
 
@@ -215,7 +220,7 @@ export default function Dashboard() {
                      <span className="text-2xl font-semibold text-blue-500">{toUSD(stats.locked)}</span>
                   </div>
                   <div>
-                     <span className={`block text-sm mb-1 ${isDark ? "text-slate-500" : "text-gray-500"}`}>Total Earnings</span>
+                     <span className={`block text-sm mb-1 ${isDark ? "text-slate-500" : "text-gray-500"}`}>Total Earnings (Net)</span>
                      <span className={`text-2xl font-semibold ${stats.total_pnl >= 0 ? "text-emerald-500" : "text-red-500"}`}>
                         {stats.total_pnl >= 0 ? "+" : ""}{toUSD(stats.total_pnl)}
                      </span>
@@ -326,9 +331,15 @@ export default function Dashboard() {
                            <div className="flex justify-between items-start mb-6">
                               <div>
                                  <h3 className={`text-2xl font-bold ${isDark ? "text-white" : "text-gray-900"}`}>{p.symbol}</h3>
-                                 <span className="text-sm text-slate-500 font-medium">
-                                    Buy Price: {toPrice(p.entry_price)}
-                                 </span>
+                                 <div className="flex items-center gap-3 mt-1">
+                                    <span className="text-sm text-slate-500 font-medium">
+                                       Entry: {toPrice(p.entry_price)}
+                                    </span>
+                                    <span className="text-slate-700">|</span>
+                                    <span className="text-sm text-slate-500 font-medium">
+                                       Invested: <span className={isDark ? "text-white" : "text-gray-900"}>{toUSD(p.used_usd || 0)}</span>
+                                    </span>
+                                 </div>
                               </div>
                               <div className="text-right">
                                  <div className={`text-2xl font-bold ${p.unrealized_pnl! >= 0 ? "text-emerald-500" : "text-red-500"}`}>
@@ -398,6 +409,53 @@ export default function Dashboard() {
                   </div>
                </section>
             </div>
+
+            {/* MARKET INTELLIGENCE */}
+            <section>
+               <h2 className={`text-xl font-bold mb-6 ${isDark ? "text-white" : "text-gray-900"}`}>Market Intelligence</h2>
+               <div className={`rounded-3xl border overflow-hidden shadow-lg ${isDark ? "bg-slate-900 border-white/5" : "bg-white border-gray-100"}`}>
+                  <div className="overflow-x-auto">
+                     <table className="w-full text-[11px]">
+                        <thead className={`font-bold uppercase tracking-wider ${isDark ? "bg-white/5 text-slate-400" : "bg-gray-50 text-gray-500"}`}>
+                           <tr>
+                              <th className="px-4 py-3 text-left">Symbol</th>
+                              <th className="px-4 py-3 text-right">Range (24h)</th>
+                              <th className="px-4 py-3 text-right">Vol Spike</th>
+                              <th className="px-4 py-3 text-right">24h Change</th>
+                              <th className="px-4 py-3 text-left">Status</th>
+                              <th className="px-4 py-3 text-right">Scanner Time</th>
+                           </tr>
+                        </thead>
+                        <tbody className={`divide-y ${isDark ? "divide-white/5" : "divide-gray-100"}`}>
+                           {signals.map((s, i) => (
+                              <tr key={i} className={`transition-colors ${isDark ? "hover:bg-white/5" : "hover:bg-gray-50"}`}>
+                                 <td className={`px-4 py-3 font-bold ${isDark ? "text-white" : "text-gray-900"}`}>{s.symbol}</td>
+                                 <td className={`px-4 py-3 text-right ${s.range > 10 ? "text-orange-400" : "text-emerald-400"}`}>{s.range}%</td>
+                                 <td className={`px-4 py-3 text-right ${s.vol_mult < 3 ? "text-slate-400" : "text-emerald-400 font-bold"}`}>{s.vol_mult}x</td>
+                                 <td className={`px-4 py-3 text-right ${s.change > 5 ? "text-red-400" : "text-slate-400"}`}>{s.change}%</td>
+                                 <td className="px-4 py-3 text-left">
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${s.reason === "Low Vol" ? "bg-slate-500/10 text-slate-500" :
+                                       s.reason === "Volatile" ? "bg-orange-500/10 text-orange-500" :
+                                          "bg-red-500/10 text-red-500"
+                                       }`}>
+                                       {s.reason?.toUpperCase() || "ALPHA"}
+                                    </span>
+                                 </td>
+                                 <td className="px-4 py-3 text-right text-slate-500 font-mono">{new Date(s.time).toLocaleTimeString()}</td>
+                              </tr>
+                           ))}
+                           {signals.length === 0 && (
+                              <tr>
+                                 <td colSpan={6} className="px-6 py-12 text-center text-slate-400">
+                                    Global market is currently quiet. Scanner is active (Checking 290+ symbols).
+                                 </td>
+                              </tr>
+                           )}
+                        </tbody>
+                     </table>
+                  </div>
+               </div>
+            </section>
 
             {/* HISTORY */}
             <section>

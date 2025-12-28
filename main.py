@@ -66,6 +66,7 @@ MAX_ORDER_USD = float(os.environ.get("MAX_ORDER_USD", "120.0"))
 MAX_POSITION_COUNT = int(os.environ.get("MAX_POSITION_COUNT", "20"))
 MAX_TRADES_PER_DAY = int(os.environ.get("MAX_TRADES_PER_DAY", "200"))
 PER_SYMBOL_COOLDOWN_SEC = int(os.environ.get("PER_SYMBOL_COOLDOWN_SEC", "300"))
+near_hits = [] # [NEW] Global storage for interesting setups
 
 # ------------------------
 # FASTAPI APP
@@ -179,13 +180,33 @@ async def get_app_state():
 async def get_equity_locked_free():
     if TRADE_MODE == "live":
         try:
+            # Get all balances
             balance = await ex_live.fetch_balance()
-            free = safe(balance["USDT"]["free"])
-            used = safe(balance["USDT"]["used"])
-            total = safe(balance["USDT"]["total"]) # Use total from exchange
-            return total, used, free
+            free_usdt = safe(balance.get("USDT", {}).get("free", 0))
+            
+            # Fetch tickers to value other coins
+            tickers = await ex_live.fetch_tickers()
+            
+            total_holdings_usd = 0.0
+            for coin, data in balance['total'].items():
+                if coin == 'USDT': continue
+                qty = num(data)
+                if qty <= 0: continue
+                
+                symbol = f"{coin}/USDT"
+                if symbol in tickers:
+                    price = num(tickers[symbol]['last'])
+                    total_holdings_usd += (qty * price)
+            
+            total_equity = safe(free_usdt + total_holdings_usd)
+            # "Locked" in the bot's context is the value of coins the bot is MANAGING
+            open_trades = await db.get_open_trades()
+            invested_by_bot = sum(t['used_usd'] for t in open_trades)
+            
+            return total_equity, safe(invested_by_bot), free_usdt
         except Exception as e:
             logger.warning(f"[BALANCE ERROR] {e}")
+            return 0.0, 0.0, 0.0
 
     # Paper mode calculation
     open_trades = await db.get_open_trades()
@@ -260,7 +281,8 @@ async def execute_buy(symbol, sl_pct, tp_pct, strategy):
     state = await get_app_state()
     trade_usd = float(state.get("trade_usd", 10.0))
     # Cap trade size at free balance
-    usd = min(trade_usd, free)
+    # [SAFETY] Add 2% buffer for exchange market-order-requirements/fees
+    usd = min(trade_usd, free) * 0.98
     
     if usd < 5: return # Too small
     
@@ -271,9 +293,6 @@ async def execute_buy(symbol, sl_pct, tp_pct, strategy):
     ticker = await safe_fetch_ticker(symbol)
     if not ticker: return
     
-    # Validate momentum again before buy
-    if not momentum_entry_ok(symbol, ticker): return
-    
     price = num(ticker["last"])
     
     # Execution
@@ -281,18 +300,29 @@ async def execute_buy(symbol, sl_pct, tp_pct, strategy):
         try:
             amount = usd / price
             # BingX Precision
-            market = ex_live.market(symbol)
-            amount = float(ex_live.amount_to_precision(symbol, amount))
+            await ex_live.load_markets() # Ensure markets are loaded
+            amount = num(ex_live.amount_to_precision(symbol, amount))
             
             order = await ex_live.create_market_buy_order(symbol, amount)
-            exec_price = float(order.get("average") or price)
-            qty = float(order["filled"])
+            # Robust price fetching
+            exec_price = num(order.get("average") or order.get("price") or price)
+            qty = num(order.get("filled") or 0)
+            
+            if qty <= 0:
+                # If order filled field is missing, check fetch_order
+                try:
+                    order = await ex_live.fetch_order(order['id'], symbol)
+                    qty = num(order.get("filled") or 0)
+                    exec_price = num(order.get("average") or order.get("price") or price)
+                except: pass
+            
             used = safe(exec_price * qty)
             
             # [SYNC] Fetch real fees from BingX
-            if 'fee' in order and order['fee'] and 'cost' in order['fee']:
-                fee_cost = float(order['fee']['cost'])
-                fee_currency = order['fee'].get('currency')
+            fee_obj = order.get('fee')
+            if fee_obj and fee_obj.get('cost') is not None:
+                fee_cost = num(fee_obj['cost'])
+                fee_currency = fee_obj.get('currency')
                 # If fee paid in Base (e.g. BTC), convert to USDT
                 if fee_currency and fee_currency == symbol.split('/')[0]:
                     fees = safe(fee_cost * exec_price)
@@ -391,14 +421,26 @@ async def execute_sell(trade_id, pct=100.0, reason="manual"):
                      return
 
                 # Precision
-                sell_qty_prec = float(ex_live.amount_to_precision(trade['symbol'], sell_qty))
+                sell_qty_prec = num(ex_live.amount_to_precision(trade['symbol'], sell_qty))
                 
                 order = await ex_live.create_market_sell_order(trade['symbol'], sell_qty_prec)
-                exec_price = float(order.get("average") or price)
+                # Robust price fetching
+                exec_price = num(order.get("average") or order.get("price") or price)
+                qty_sold = num(order.get("filled") or sell_qty_prec)
+                
+                if num(order.get("filled", 0)) <= 0:
+                     try:
+                        order = await ex_live.fetch_order(order['id'], trade['symbol'])
+                        exec_price = num(order.get("average") or order.get("price") or price)
+                        qty_sold = num(order.get("filled") or sell_qty_prec)
+                     except: pass
+                
+                sell_qty = qty_sold # Use actual filled qty if possible
                 
                 # [SYNC] Fetch real fees from BingX
-                if 'fee' in order and order['fee'] and 'cost' in order['fee']:
-                    fees = float(order['fee']['cost'])
+                fee_obj = order.get('fee')
+                if fee_obj and fee_obj.get('cost') is not None:
+                    fees = num(fee_obj['cost'])
                     # Fee on sell is usually USDT
                 else:
                     fees = safe(exec_price * sell_qty * COMMISSION_PCT)
@@ -543,10 +585,19 @@ async def strategy_loop():
                         ohlcv = await ex_live.fetch_ohlcv(symbol, '1h', limit=25)
                         
                         # Use Modular Logic
-                        if AlphaHunter.check_signal(symbol, ohlcv):
+                        signal, diagnostic = AlphaHunter.check_signal(symbol, ohlcv)
+                        
+                        if diagnostic:
+                            # Update near_hits
+                            diagnostic['time'] = datetime.now(timezone.utc).isoformat()
+                            near_hits.insert(0, diagnostic)
+                            while len(near_hits) > 20: near_hits.pop()
+
+                        if signal:
                             await execute_buy(symbol, 4.0, 0.0, "alpha_hunter")
                             
-                    except Exception: pass
+                    except Exception as e:
+                        logger.error(f"[SCANNER ERROR] {symbol}: {e}")
                 
                 # Rate Limit Sleep between chunks  
                 await asyncio.sleep(1.0) 
@@ -556,8 +607,8 @@ async def strategy_loop():
         except Exception as e:
             logger.exception("Strategy loop crashed")
         
-        # Scan every 15 minutes
-        await asyncio.sleep(60 * 15)
+        # Scan every 5 minutes during tuning
+        await asyncio.sleep(60 * 5)
 
 # ------------------------
 # ENDPOINTS
@@ -570,14 +621,20 @@ async def stats():
     all_trades = await db.get_all_trades_desc(limit=500)
     closed = [t for t in all_trades if t['status'] == 'closed']
     wins = [t for t in closed if t['pnl'] > 0]
-    total_pnl = sum(t['pnl'] for t in closed)
+    total_realized_pnl = sum(t['pnl'] for t in closed)
+    
+    # [NEW] Unrealized PnL from open trades
+    open_trades = await db.get_open_trades()
+    total_unrealized_pnl = sum(t.get('unrealized_pnl', 0.0) for t in open_trades)
     
     return {
         "balance": equity,
         "locked": locked,
         "free": free,
         "mode": "auto" if state.get("auto_trading") else "manual",
-        "total_pnl": safe(total_pnl),
+        "total_pnl": safe(total_realized_pnl + total_unrealized_pnl),
+        "realized_pnl": safe(total_realized_pnl),
+        "unrealized_pnl": safe(total_unrealized_pnl),
         "win_rate": safe((len(wins)/len(closed)*100) if closed else 0),
         "total_trades": len(closed)
     }
@@ -589,6 +646,10 @@ async def get_trades():
 @app.get("/positions")
 async def get_positions():
     return await db.get_open_trades()
+
+@app.get("/signals")
+async def get_signals():
+    return near_hits
 
 @app.post("/paper-sell")
 async def paper_sell(trade_id: str = Query(...), sell_pct: float = Query(100.0)):

@@ -5,15 +5,13 @@ logger = logging.getLogger("TradingBot")
 
 class AlphaHunter:
     @staticmethod
-    def check_signal(symbol: str, ohlcv: list) -> bool:
+    def check_signal(symbol: str, ohlcv: list) -> tuple:
         """
         Analyzes 1H candles to find 'Pre-Pump' signatures:
-        1. Tight Consolidation (< 10% range in 24h)
-        2. high Volume Spike (> 3x 24h avg)
-        3. Low Price Change (< 5% in 24h)
+        Returns (bool signal, dict diagnostic)
         """
         try:
-            if not ohlcv or len(ohlcv) < 24: return False
+            if not ohlcv or len(ohlcv) < 24: return False, None
             
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
             
@@ -21,30 +19,54 @@ class AlphaHunter:
             last_24 = df.iloc[-24:]
             high = last_24['high'].max()
             low = last_24['low'].min()
-            if low <= 0: return False
+            if low <= 0: return False, None
             
-            price_range = ((high - low) / low) * 100
+            price_range = round(((high - low) / low) * 100, 2)
             
-            if price_range > 10.0: return False # Too volatile
+            diag = {
+                "symbol": symbol,
+                "range": price_range,
+                "vol_mult": 0.0,
+                "change": 0.0,
+                "reason": ""
+            }
+
+            if price_range > 15.0: # Allow slightly wider range for diagnostics
+                return False, None
                 
             # 2. Check Volume Spike (Last 1h vs Avg 24h)
             current_vol = df.iloc[-1]['vol']
             avg_vol = last_24['vol'].mean()
             
-            if avg_vol == 0: return False
-            vol_mult = current_vol / avg_vol
+            if avg_vol == 0: return False, None
+            vol_mult = round(current_vol / avg_vol, 2)
+            diag["vol_mult"] = vol_mult
             
-            if vol_mult < 3.0: return False # No whale activity
-                
             # 3. Check Price Change (Don't buy top)
             open_24 = last_24.iloc[0]['open']
             close_now = df.iloc[-1]['close']
-            change = ((close_now - open_24) / open_24) * 100
+            change = round(((close_now - open_24) / open_24) * 100, 2)
+            diag["change"] = change
+
+            # Logic Check
+            is_range_ok = price_range <= 10.0
+            is_vol_ok = vol_mult >= 3.0
+            is_change_ok = change <= 5.0
+
+            if is_range_ok and is_vol_ok and is_change_ok:
+                logger.info(f"[ALPHA FOUND] {symbol} | Vol: {vol_mult}x | Range: {price_range}%")
+                return True, diag
             
-            if change > 5.0: return False # Already pumped
+            # If "Interesting" but not a signal (Near Hit)
+            if (vol_mult > 1.5 or price_range < 5.0) and change < 10:
+                diag["reason"] = "Low Vol" if not is_vol_ok else "Volatile" if not is_range_ok else "Pumped"
+                return False, diag
+
+            return False, None
             
-            logger.info(f"[ALPHA FOUND] {symbol} | Vol: {vol_mult:.1f}x | Range: {price_range:.1f}%")
-            return True
+        except Exception as e:
+            logger.error(f"[STRATEGY ERROR] {symbol}: {e}")
+            return False, None
             
         except Exception as e:
             logger.error(f"[STRATEGY ERROR] {symbol}: {e}")
