@@ -65,7 +65,7 @@ MAX_DAILY_LOSS_USD = float(os.environ.get("MAX_DAILY_LOSS_USD", "500.0"))
 MAX_ORDER_USD = float(os.environ.get("MAX_ORDER_USD", "120.0"))
 MAX_POSITION_COUNT = int(os.environ.get("MAX_POSITION_COUNT", "20"))
 MAX_TRADES_PER_DAY = int(os.environ.get("MAX_TRADES_PER_DAY", "200"))
-PER_SYMBOL_COOLDOWN_SEC = int(os.environ.get("PER_SYMBOL_COOLDOWN_SEC", "300"))
+PER_SYMBOL_COOLDOWN_SEC = int(os.environ.get("PER_SYMBOL_COOLDOWN_SEC", "43200")) # 12 Hours cooldown per coin
 near_hits = [] # [NEW] Global storage for interesting setups
 
 # ------------------------
@@ -594,7 +594,8 @@ async def strategy_loop():
                             while len(near_hits) > 20: near_hits.pop()
 
                         if signal:
-                            await execute_buy(symbol, 4.0, 0.0, "alpha_hunter")
+                            # [TUNED] SL 6.0%, TP 0.0 (using trail), strategy "alpha_hunter"
+                            await execute_buy(symbol, 6.0, 0.0, "alpha_hunter")
                             
                     except Exception as e:
                         logger.error(f"[SCANNER ERROR] {symbol}: {e}")

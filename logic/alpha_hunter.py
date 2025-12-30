@@ -42,7 +42,20 @@ class AlphaHunter:
             vol_mult = round(current_vol / avg_vol, 2)
             diag["vol_mult"] = vol_mult
             
-            # 3. Check Price Change (Don't buy top)
+            # 3. Calculate Indicators
+            # RSI
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / loss
+            rsi = 100 - (100 / (1 + rs))
+            curr_rsi = round(rsi.iloc[-1], 2)
+            
+            # EMA 8 (Trend)
+            ema8 = df['close'].ewm(span=8, adjust=False).mean()
+            curr_ema8 = ema8.iloc[-1]
+            
+            # 4. Check Price Change (Don't buy top)
             open_24 = last_24.iloc[0]['open']
             close_now = df.iloc[-1]['close']
             change = round(((close_now - open_24) / open_24) * 100, 2)
@@ -50,16 +63,20 @@ class AlphaHunter:
 
             # Logic Check
             is_range_ok = price_range <= 10.0
-            is_vol_ok = vol_mult >= 3.0
+            is_vol_ok = vol_mult >= 4.0
             is_change_ok = change <= 5.0
+            is_rsi_ok = curr_rsi < 70
+            is_trend_ok = close_now > curr_ema8
 
-            if is_range_ok and is_vol_ok and is_change_ok:
-                logger.info(f"[ALPHA FOUND] {symbol} | Vol: {vol_mult}x | Range: {price_range}%")
+            if is_range_ok and is_vol_ok and is_change_ok and is_rsi_ok and is_trend_ok:
+                logger.info(f"[ALPHA FOUND] {symbol} | Vol: {vol_mult}x | RSI: {curr_rsi} | Range: {price_range}%")
                 return True, diag
             
             # If "Interesting" but not a signal (Near Hit)
             if (vol_mult > 1.5 or price_range < 5.0) and change < 10:
-                diag["reason"] = "Low Vol" if not is_vol_ok else "Volatile" if not is_range_ok else "Pumped"
+                if not is_rsi_ok: diag["reason"] = "Overbought"
+                elif not is_trend_ok: diag["reason"] = "No Trend"
+                else: diag["reason"] = "Low Vol" if not is_vol_ok else "Volatile" if not is_range_ok else "Pumped"
                 return False, diag
 
             return False, None
