@@ -15,6 +15,12 @@ class AlphaHunter:
             
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
             
+            # [QUANT] Volatility Check
+            from logic.indicators import check_volatility_ok
+            vol_ok, vol_msg = check_volatility_ok(df, '1h')
+            if not vol_ok:
+                return False, {"reason": vol_msg}
+            
             # 1. Check Consolidation (Last 24h)
             last_24 = df.iloc[-24:]
             high = last_24['high'].max()
@@ -70,6 +76,8 @@ class AlphaHunter:
 
             if is_range_ok and is_vol_ok and is_change_ok and is_rsi_ok and is_trend_ok:
                 logger.info(f"[ALPHA FOUND] {symbol} | Vol: {vol_mult}x | RSI: {curr_rsi} | Range: {price_range}%")
+                # Return 15% TP for Alpha Hunter
+                diag['tp_pct'] = 15.0
                 return True, diag
             
             # If "Interesting" but not a signal (Near Hit)

@@ -14,7 +14,7 @@ async def scan_market():
     print("=== PROBABILITY SCANNER (Finding the Next FLOW) ===")
     print(f"Criteria: Range < {MAX_CONSOLIDATION_RANGE}% | Vol > {MIN_VOLUME_MULT}x | Change < {MAX_PRICE_CHANGE}%")
     
-    ex = ccxt.bingx({'options': {'defaultType': 'spot'}})
+    ex = ccxt.binance({'options': {'defaultType': 'spot'}})
     tickers = await ex.fetch_tickers()
     
     # 1. Filter candidates (USDT, Liquidity)

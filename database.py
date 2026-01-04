@@ -12,6 +12,9 @@ class Database:
 
     async def init_db(self):
         async with aiosqlite.connect(self.db_file) as db:
+            # [HARDENING] Enable WAL mode for concurrency
+            await db.execute("PRAGMA journal_mode=WAL;")
+            
             # Create trades table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS trades (

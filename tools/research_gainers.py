@@ -13,7 +13,7 @@ async def main():
     print("=== GAINER PATTERN RESEARCH ===")
     print("1. Identifying recent Top Gainers...")
     
-    ex = ccxt.bingx({'options': {'defaultType': 'spot'}})
+    ex = ccxt.binance({'options': {'defaultType': 'spot'}})
     tickers = await ex.fetch_tickers()
     
     # Filter for active USDT pairs

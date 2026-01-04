@@ -33,9 +33,9 @@ class BacktestEngine:
             df['timestamp'] = pd.to_datetime(df['timestamp'])
             return df
         
-        print(f"Fetching {symbol} from BingX...")
+        print(f"Fetching {symbol} from Binance...")
         # FIX: Explicitly set spot
-        ex = ccxt.bingx({
+        ex = ccxt.binance({
             'options': {'defaultType': 'spot'}
         })
         
