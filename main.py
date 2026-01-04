@@ -12,7 +12,7 @@ from typing import Optional
 
 # Third-Party Imports
 import pandas as pd
-import numpy as np
+# import numpy as np # Unused
 from dotenv import load_dotenv
 import ccxt.async_support as ccxt
 from fastapi import FastAPI, Query
@@ -1077,7 +1077,7 @@ async def stats():
         "realized_pnl": safe(total_realized_pnl),
         "unrealized_pnl": safe(total_unrealized_pnl),
         "win_rate": safe((len(wins)/len(closed)*100) if closed else 0),
-        "win_rate": safe((len(wins)/len(closed)*100) if closed else 0),
+
         "total_trades": len(closed),
         "api_status": api_status,
         "api_error": api_error
