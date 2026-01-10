@@ -113,28 +113,51 @@ class SMCManager:
             
             df, active_obs = analysis
             if len(df) < 50: return False, None
-            
-            # [QUANT] Trend Filter (Avoid catching falling knives)
-            if not trend_bullish:
-                return False, {"reason": "Trend is Bearish (Price < EMA50)"}
-            
-            # [QUANT] Volatility Check
+
+            # [QUANT] RSI Calculation (Moved UP for Diagnostics)
+            delta = df['close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+            rs = gain / (loss.replace(0, 0.0001))
+            rsi = 100 - (100 / (1 + rs))
+            current_rsi = rsi.iloc[-1]
+            current_price = df.iloc[-1]['close']
+
+            # [QUANT] Volatility Check (Moved Up for Diagnostics)
             from logic.indicators import check_volatility_ok
             vol_ok, vol_msg = check_volatility_ok(df, '15m')
-            if not vol_ok:
-                return False, {"reason": vol_msg}
-
-            current_price = df.iloc[-1]['close']
-            current_low = df.iloc[-1]['low']
-            current_close = df.iloc[-1]['close']
             
+            # Prepare Diagnostic Object EARLY
             diag = {
                 "symbol": symbol,
                 "strategy": "SMC",
                 "active_obs": len(active_obs),
                 "nearest_ob": None,
+                "rsi": round(current_rsi, 2),
+                "trend": "Bullish" if trend_bullish else "Bearish", 
+                "price": current_price,
+                "vol_ok": vol_ok,
+                "vol_msg": vol_msg,
                 "reason": ""
             }
+            
+            # [QUANT] Trend Filter (Avoid catching falling knives)
+            if not trend_bullish:
+                diag['reason'] = "Trend is Bearish (Price < EMA50)"
+                return False, diag
+            
+            # [QUANT] Volatility Check Rejection
+            if not vol_ok:
+                diag['reason'] = vol_msg
+                return False, diag
+
+            # Reject if RSI is too high (approaching blocked/resistance)
+            if current_rsi > 60:
+                diag['reason'] = f"RSI Too High ({current_rsi:.1f} > 60)"
+                return False, diag
+
+            current_low = df.iloc[-1]['low']
+            current_close = df.iloc[-1]['close']
 
             # Look for entry into a Bullish OB
             bullish_obs = [ob for ob in active_obs if ob['type'] == 'bullish']

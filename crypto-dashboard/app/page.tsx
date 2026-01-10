@@ -386,35 +386,29 @@ export default function Dashboard() {
                      </div>
                   </section>
 
-                  {/* MARKET INTELLIGENCE */}
+                  {/* MARKET TREND & SMC SCANNER */}
                   <section className={`p-6 rounded-3xl border shadow-lg ${isDark ? "bg-slate-900 border-white/10" : "bg-white border-gray-100"}`}>
-                     <h3 className="text-lg font-bold mb-4">Market Intelligence</h3>
-                     <div className="overflow-x-auto">
-                        <table className="w-full text-[10px]">
-                           <thead className="font-bold uppercase tracking-wider opacity-50">
-                              <tr>
-                                 <th className="px-2 py-2 text-left">Symbol</th>
-                                 <th className="px-2 py-2 text-right">Status</th>
-                              </tr>
-                           </thead>
-                           <tbody className="divide-y divide-white/5">
-                              {signals.filter(s => s?.symbol).slice(0, 10).map((s, i) => (
-                                 <tr key={i}>
-                                    <td className="px-2 py-2 font-bold">{s.symbol}</td>
-                                    <td className="px-2 py-2 text-right font-bold text-[9px]">
-                                       <span className={s.reason === "Low Vol" ? "text-slate-500" : s.reason === "Volatile" ? "text-orange-500" : "text-red-500"}>
-                                          {(s.reason || "PUMP!").toUpperCase()}
-                                       </span>
-                                    </td>
-                                 </tr>
-                              ))}
-                           </tbody>
-                        </table>
+                     <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-lg font-bold">Market Trend</h3>
+                        <div className={`px-3 py-1 rounded-full text-xs font-bold border ${stats.market_trend_label === 'Bullish' ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-500" :
+                           stats.market_trend_label === 'Bearish' ? "bg-red-500/10 border-red-500/20 text-red-500" :
+                              "bg-yellow-500/10 border-yellow-500/20 text-yellow-500"
+                           }`}>
+                           {stats.market_trend_label?.toUpperCase() || "NEUTRAL"} ({stats.market_trend_score || 50}%)
+                        </div>
                      </div>
-                  </section>
 
-                  {/* SMC SCANNER */}
-                  <section className={`p-6 rounded-3xl border shadow-lg ${isDark ? "bg-slate-900 border-white/10" : "bg-white border-gray-100"}`}>
+                     {/* Trend Bar */}
+                     <div className="w-full h-2 rounded-full bg-white/5 overflow-hidden mb-6">
+                        <div
+                           className={`h-full transition-all duration-1000 ${stats.market_trend_label === 'Bullish' ? "bg-emerald-500" :
+                              stats.market_trend_label === 'Bearish' ? "bg-red-500" :
+                                 "bg-yellow-500"
+                              }`}
+                           style={{ width: `${stats.market_trend_score || 50}%` }}
+                        />
+                     </div>
+
                      <h3 className="text-lg font-bold mb-2">SMC Sniper Scanner</h3>
                      <p className="text-[10px] opacity-50 mb-4">Unmitigated Order Blocks</p>
                      <div className="overflow-x-auto">
@@ -422,21 +416,38 @@ export default function Dashboard() {
                            <thead className="font-bold uppercase tracking-wider opacity-50">
                               <tr>
                                  <th className="px-1 py-2 text-left">Coin</th>
-                                 <th className="px-1 py-2 text-center">Type</th>
-                                 <th className="px-1 py-2 text-right">Dist%</th>
+                                 <th className="px-1 py-2 text-center">Trend</th>
+                                 <th className="px-1 py-2 text-center">RSI</th>
+                                 <th className="px-1 py-2 text-center">Vol</th>
+                                 <th className="px-1 py-2 text-right">Zone Dist</th>
                               </tr>
                            </thead>
                            <tbody className="divide-y divide-white/5">
                               {smcScanner.length === 0 && (
-                                 <tr><td colSpan={3} className="py-4 text-center opacity-30 italic">No OBs detected</td></tr>
+                                 <tr><td colSpan={5} className="py-4 text-center opacity-30 italic">No OBs detected</td></tr>
                               )}
                               {smcScanner.map((s, i) => (
                                  <tr key={i} className="hover:bg-white/5 transition-colors">
                                     <td className="px-1 py-2 font-bold truncate max-w-[60px]">{s.symbol.split('/')[0]}</td>
                                     <td className="px-1 py-2 text-center">
-                                       <span className={`px-1.5 py-0.5 rounded text-[8px] font-bold ${s.type === 'bullish' ? "bg-emerald-500/20 text-emerald-500" : "bg-red-500/20 text-red-500"}`}>
-                                          {s.type.toUpperCase()}
+                                       <span className={`text-[10px] ${s.trend === "Bullish" ? "text-emerald-500" : "text-red-500"}`}>
+                                          {s.trend === "Bullish" ? "▲" : "▼"}
                                        </span>
+                                    </td>
+                                    <td className={`px-1 py-2 text-center font-mono text-[9px] ${s.rsi > 60 ? "text-red-500" : "text-emerald-500"}`}>
+                                       {s.rsi}
+                                    </td>
+                                    <td className="px-1 py-2 text-center">
+                                       {s.vol_ok ? (
+                                          <span className="text-emerald-500 text-[10px]">✔</span>
+                                       ) : (
+                                          <div className="group relative inline-flex justify-center cursor-help">
+                                             <span className="text-yellow-500 text-[10px] font-bold">⚠️</span>
+                                             <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-1 bg-slate-800 text-white text-[9px] rounded shadow-lg whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity z-10 pointer-events-none">
+                                                {s.vol_msg || "Low Volatility"}
+                                             </div>
+                                          </div>
+                                       )}
                                     </td>
                                     <td className={`px-1 py-2 text-right font-mono ${Math.abs(s.distance_pct) < 0.5 ? "text-yellow-500 animate-pulse font-bold" : "opacity-70"}`}>
                                        {s.distance_pct > 0 ? "+" : ""}{s.distance_pct}%

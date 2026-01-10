@@ -36,9 +36,16 @@ class Database:
                     fees_usd REAL,
                     highest_price REAL,
                     trail_active INTEGER, -- Boolean stored as 1/0
-                    trail_sl REAL
+                    trail_sl REAL,
+                    is_partial INTEGER DEFAULT 0 -- 0=Full, 1=Partial Sold
                 )
             """)
+
+            # [MIGRATION] Add is_partial column if not exists
+            try:
+                await db.execute("ALTER TABLE trades ADD COLUMN is_partial INTEGER DEFAULT 0")
+            except Exception:
+                pass # Already exists
 
             # Create app_state table
             await db.execute("""

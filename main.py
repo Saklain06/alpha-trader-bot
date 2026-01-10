@@ -56,7 +56,8 @@ ex_live = ccxt.binance({
     "enableRateLimit": True,
     "options": {
         "defaultType": "spot",
-        "adjustForTimeDifference": True
+        "adjustForTimeDifference": True,
+        "recvWindow": 60000
     }
 })
 
@@ -886,10 +887,27 @@ async def watcher_loop():
                 
                 if effective_sl > 0 and price <= effective_sl:
                     should_close = True; reason = "sl"
-                elif t['tp'] > 0 and price >= t['tp']:
-                    should_close = True; reason = "tp"
                 elif (t.get('trail_active') or updates.get('trail_active')) and price <= updates.get('trail_sl', t['trail_sl']):
                     should_close = True; reason = "trail"
+                elif t['tp'] > 0 and price >= t['tp']:
+                    # [MOONSHOT] Partial Take Profit Logic
+                    if not t.get('is_partial') and not updates.get('is_partial'):
+                        logger.info(f"🚀 [PARTIAL TP] {t['symbol']} hit target {t['tp']}. Selling 50% & Trail rest.")
+                        # Execute 50% Sell
+                        await execute_sell(t['id'], 50, "partial_tp")
+                        
+                        # Update State for Moonshot
+                        updates['is_partial'] = 1
+                        updates['tp'] = 0 # Remove TP (Infinity)
+                        updates['sl'] = t['entry_price'] * 1.001 # Move SL to Breakeven (+0.1%)
+                        
+                        # Activate Trailing immediately
+                        updates['trail_active'] = 1
+                        updates['trail_sl'] = safe(highest * (1 - 0.02)) # Trail 2% initially
+                        
+                        should_close = False # Don't close full
+                    else:
+                        should_close = True; reason = "tp" # Should not happen if TP set to 0, but safety
                 
                 await db.update_trade(t['id'], updates)
                 
@@ -906,6 +924,8 @@ async def watcher_loop():
 # ------------------------------------------------------------------------------
 
 smc_scanner_cache = [] # Global storage for SMC setups
+market_trend_score = 50 # Default Neutral
+market_trend_label = "Neutral"
 
 async def strategy_loop():
     logger.info("Strategy Loop Started (Alpha Hunter + SMC)...")
@@ -968,6 +988,7 @@ async def strategy_loop():
             
             # 3. SMC Scan (Top Gainers) - Population ONLY (No Trading in Ph2)
             new_smc_cache = []
+            bullish_count = 0 
             for symbol in top_gainers:
                 try:
                     ohlcv = await ex_live.fetch_ohlcv(symbol, '15m', limit=100)
@@ -977,11 +998,17 @@ async def strategy_loop():
                     # we do a separate fetch for 1h trend context.
                     trend_bullish = True
                     try:
-                         ohlcv_1h = await ex_live.fetch_ohlcv(symbol, '1h', limit=60)
+                         ohlcv_1h = await ex_live.fetch_ohlcv(symbol, '1h', limit=210) # Need 200+ for EMA200
                          df_1h = pd.DataFrame(ohlcv_1h, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
                          ema50 = df_1h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+                         ema200 = df_1h['close'].ewm(span=200, adjust=False).mean().iloc[-1]
                          current_price = df_1h['close'].iloc[-1]
-                         trend_bullish = current_price > ema50
+                         
+                         # [OPTIMIZATION] Stricter Trend: Price > EMA50 AND Price > EMA200
+                         trend_bullish = current_price > ema50 and current_price > ema200
+                         
+                         if trend_bullish:
+                             bullish_count += 1
                     except:
                         pass # Default to True (permissive) if trend fetch fails to allow fallback to other checks
 
@@ -996,20 +1023,60 @@ async def strategy_loop():
 
                     # Update Scanner Cache for UI visibility
                     scanner_data = SMCManager.get_scanner_data(symbol, ohlcv)
-                    if scanner_data: new_smc_cache.extend(scanner_data)
+                    if scanner_data: 
+                        # Enrich with diagnostic data
+                        for item in scanner_data:
+                            item['rsi'] = diagnostic.get('rsi', 0) if diagnostic else 0
+                            item['trend'] = diagnostic.get('trend', 'Unknown') if diagnostic else 'Unknown'
+                            item['vol_ok'] = diagnostic.get('vol_ok', True) if diagnostic else True
+                            item['vol_msg'] = diagnostic.get('vol_msg', '') if diagnostic else ''
+                        new_smc_cache.extend(scanner_data)
                     
                     # [QUANT] SMC Sniper Execution (Enabled)
                     is_valid_signal, _ = SMCManager.check_signal(symbol, ohlcv, trend_bullish=trend_bullish)
                     if is_valid_signal:
                         # SMC typically aims for high RR. 
-                        # Using 2.0% SL and 6.0% TP (1:3 RR) as standard sniper settings.
-                        await execute_buy(symbol, 2.0, 6.0, "SMC_SNIPER")
+                        # [OPTIMIZATION] Reduced TP from 6.0% to 4.5% to improve hit rate
+                        # SL remains 2.0%, RR = 2.25 (still healthy)
+                        await execute_buy(symbol, 2.0, 4.5, "SMC_SNIPER")
                     
                     await asyncio.sleep(0.5)
                 except Exception as e:
                     logger.error(f"[SMC ERROR] {symbol}: {e}")
             
             smc_scanner_cache = sorted(new_smc_cache, key=lambda x: abs(x['distance_pct']))[:20]
+            
+            # [MARKET INTELLIGENCE] Calculate Overall Market Trend
+            global market_trend_score, market_trend_label
+            
+            # [QUANT] BTC Gatekeeper (Major Trend Filter)
+            btc_is_bullish = True
+            try:
+                btc_ohlcv = await ex_live.fetch_ohlcv('BTC/USDT', '4h', limit=210)
+                if btc_ohlcv:
+                    df_btc = pd.DataFrame(btc_ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
+                    btc_ema200 = df_btc['close'].ewm(span=200, adjust=False).mean().iloc[-1]
+                    btc_price = df_btc['close'].iloc[-1]
+                    if btc_price < btc_ema200:
+                        btc_is_bullish = False
+                        logger.warning(f"⚠️ [BTC GATE] BTC is Bearish (< EMA200 4h). Capping Market Score.")
+            except Exception as e:
+                logger.error(f"[BTC CHECK FAIL] {e}")
+
+            if len(top_gainers) > 0:
+                raw_score = int((bullish_count / len(top_gainers)) * 100)
+                
+                # Apply Gate
+                if not btc_is_bullish:
+                    market_trend_score = min(raw_score, 40) # Cap at 40% (Bearish)
+                    market_trend_label = "Bearish (BTC)"
+                else:
+                    market_trend_score = raw_score
+                    if raw_score >= 60: market_trend_label = "Bullish"
+                    elif raw_score <= 40: market_trend_label = "Bearish"
+                    else: market_trend_label = "Neutral"
+            
+            logger.info(f"📈 [MARKET TREND] Score: {market_trend_score}/100 ({market_trend_label})")
 
             # 4. AlphaHunter Scan (Others)
             for symbol in others:
@@ -1080,7 +1147,11 @@ async def stats():
 
         "total_trades": len(closed),
         "api_status": api_status,
-        "api_error": api_error
+        "api_error": api_error,
+        
+        # [MARKET INTELLIGENCE]
+        "market_trend_score": market_trend_score,
+        "market_trend_label": market_trend_label
     }
 
 @app.get("/trades")
