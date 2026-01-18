@@ -27,9 +27,17 @@ def check_volatility_ok(df, timeframe_entry='15m'):
     last_candle = df.iloc[-1]
     candle_range_pct = ((last_candle['high'] - last_candle['low']) / last_candle['low']) * 100
     
-    if atr_pct < 0.6:
-        return False, f"Low ATR%: {atr_pct:.2f}%"
-    if candle_range_pct < 0.4:
-        return False, f"Low Candle Range%: {candle_range_pct:.2f}%"
+    # [SCALPER MODE] Tighter thresholds for 5m
+    if timeframe_entry == '5m':
+        limit_atr = 0.25
+        limit_range = 0.20
+    else:
+        limit_atr = 0.6
+        limit_range = 0.4
+    
+    if atr_pct < limit_atr:
+        return False, f"Low ATR%: {atr_pct:.2f}% < {limit_atr}%"
+    if candle_range_pct < limit_range:
+        return False, f"Low Candle Range%: {candle_range_pct:.2f}% < {limit_range}%"
         
     return True, "Volatility OK"

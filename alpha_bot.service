@@ -1,0 +1,21 @@
+[Unit]
+Description=Alpha Trader Bot (24/7)
+After=network.target
+
+[Service]
+# Run as the current user
+User=saklain
+WorkingDirectory=/home/saklain/test_trading_bot
+
+# Start the wrapper script
+ExecStart=/bin/bash /home/saklain/test_trading_bot/run_all.sh
+
+# Restart strictly on failure or crash
+Restart=always
+RestartSec=5
+
+# Environment variables if needed
+# Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
