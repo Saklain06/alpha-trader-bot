@@ -1,5 +1,3 @@
-
-// Deployment Verified: 2026-01-19 (Force Sync)
 "use client";
 
 import { useEffect, useState, useRef } from "react";
@@ -182,10 +180,9 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
 
       const fetchHistory = async () => {
          try {
-            // [PROXY FIX] Use relative path /api for data fetching (goes through Nginx)
-            // If localhost, fallback to direct port 8000
-            const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost';
-            const apiBase = isLocal ? 'http://localhost:8000' : '/api';
+            const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+            const protocol = typeof window !== 'undefined' ? window.location.protocol.replace(':', '') : 'http';
+            const apiBase = "/api";
 
             const res = await fetch(`${apiBase}/history?symbol=${symbol}&interval=${interval}`);
             const json = await res.json();
@@ -299,23 +296,17 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
 };
 
 export default function Dashboard() {
-   // Dynamic API Host (No State Trap)
-   // Dynamic API Host (Relative Path for Nginx Proxy)
-   const getApiUrl = () => {
-      // In production (VPS), we use Nginx proxy at /api
-      // In development (localhost), we might still want port 8000 found via next.config.js rewrites or direct
-      if (typeof window !== "undefined") {
-         // If running on localhost (dev), keeps localhost:8000 for convenience if no proxy
-         if (window.location.hostname === "localhost") return "http://localhost:8000";
-         // On VPS, use relative path which goes through Nginx
-         return "/api";
-      }
-      return "http://localhost:8000";
-   };
+   const [apiHost, setApiHost] = useState("localhost");
+   const [apiProtocol, setApiProtocol] = useState("http");
 
-   // Temporary for initialization (will be updated dynamically)
-   // Temporary for initialization
-   const API_REF = useRef("/api");
+   useEffect(() => {
+      if (typeof window !== "undefined") {
+         setApiHost(window.location.hostname);
+         setApiProtocol(window.location.protocol.replace(":", ""));
+      }
+   }, []);
+
+   const API = `${apiProtocol}://${apiHost}:8000`;
 
    const [stats, setStats] = useState<any>({});
    const [trades, setTrades] = useState<any[]>([]);
@@ -350,18 +341,14 @@ export default function Dashboard() {
    const tradesPerPage = 10;
 
    const loadData = async () => {
-      // Dynamic API URL calculation to avoid closure staleness
-      const currentApi = getApiUrl();
-      API_REF.current = currentApi;
-
       try {
          const [s, t, p, cfg, sigs, smc] = await Promise.all([
-            fetchWithTimeout(`${currentApi}/stats`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/trades`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/positions`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/admin/trade-usd`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/signals`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/smc-scanner`).then(r => r.json())
+            fetchWithTimeout(`${API}/stats`).then(r => r.json()),
+            fetchWithTimeout(`${API}/trades`).then(r => r.json()),
+            fetchWithTimeout(`${API}/positions`).then(r => r.json()),
+            fetchWithTimeout(`${API}/admin/trade-usd`).then(r => r.json()),
+            fetchWithTimeout(`${API}/signals`).then(r => r.json()),
+            fetchWithTimeout(`${API}/smc-scanner`).then(r => r.json())
          ]);
          setStats(s);
          setTrades(t);
@@ -409,7 +396,7 @@ export default function Dashboard() {
       if (!confirm("Pause AI Agent?")) return;
       setLoading(true);
       try {
-         await fetchWithTimeout(`${API_REF.current}/admin/kill`, { method: "POST" });
+         await fetchWithTimeout(`${API}/admin/kill`, { method: "POST" });
          await loadData();
       } finally {
          setLoading(false);
@@ -420,7 +407,7 @@ export default function Dashboard() {
       if (!confirm("Start AI Agent?")) return;
       setLoading(true);
       try {
-         await fetchWithTimeout(`${API_REF.current}/admin/resume`, { method: "POST" });
+         await fetchWithTimeout(`${API}/admin/resume`, { method: "POST" });
          await loadData();
       } finally {
          setLoading(false);
@@ -450,7 +437,7 @@ export default function Dashboard() {
       if (loading) return;
       setLoading(true);
       try {
-         await fetchWithTimeout(`${API_REF.current}/paper-sell?trade_id=${id}&sell_pct=${pct}`, { method: "POST" });
+         await fetchWithTimeout(`${API}/paper-sell?trade_id=${id}&sell_pct=${pct}`, { method: "POST" });
          await loadData();
       } finally {
          setLoading(false);
@@ -463,7 +450,7 @@ export default function Dashboard() {
       const tp = tpEdits[p.id] ?? p.tp ?? "";
       setLoading(true);
       try {
-         await fetchWithTimeout(`${API_REF.current}/update-sl-tp?trade_id=${p.id}&sl=${sl || 0}&tp=${tp || 0}`, { method: "POST" });
+         await fetchWithTimeout(`${API}/update-sl-tp?trade_id=${p.id}&sl=${sl || 0}&tp=${tp || 0}`, { method: "POST" });
          alert(`✅ Updated for ${p.symbol}`);
          await loadData();
       } finally {
