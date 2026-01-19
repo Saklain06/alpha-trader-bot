@@ -27,71 +27,80 @@ Push your code to a private GitHub repository so you can easily pull it onto the
    git push -u origin main
    ```
 
-## ☁️ Step 2: Set Up the Server
-*(Example assumes Ubuntu 22.04 LTS)*
+## ⚡ Quick Start (Automated Setup)
+This is the **recommended** method for Hostinger, DigitalOcean, or AWS/Google Cloud Ubuntu servers.
 
-1. **Sign up** for one of the providers above.
-2. **Create a VM Instance** (use Ubuntu 22.04).
-3. **Connect via SSH**:
+1. **Connect to your VPS**:
    ```bash
-   ssh ubuntu@<YOUR_SERVER_IP>
+   ssh root@<YOUR_SERVER_IP>
    ```
 
-## ⚙️ Step 3: Install Dependencies
-Run these commands on your new server to set up the environment:
+2. **Clone your repository**:
+   ```bash
+   git clone <YOUR_REPO_URL> alpha_bot
+   cd alpha_bot
+   ```
 
+3. **Run the Setup Script**:
+   ```bash
+   # Make it executable
+   chmod +x setup_hostinger.sh
+   
+   # Run the installer
+   sudo bash setup_hostinger.sh
+   ```
+   **What this does:**
+   - Updates system & firewall
+   - Installs Python, Node.js, Nginx
+   - Sets up the Backend Service (Systemd)
+   - Sets up the Frontend Dashboard (PM2)
+   - Reverse proxies everything so you can access it on Port 80
+
+4. **Access your Dashboard**:
+   - Open `http://<YOUR_SERVER_IP>` in your browser.
+
+---
+
+## 🛠 Manual Setup (Old Method)
+If the script fails or you prefer manual control, follow these steps:
+
+### 1. Install Dependencies
 ```bash
-# 1. Update System
 sudo apt update && sudo apt upgrade -y
-
-# 2. Install Python & Pip
-sudo apt install -y python3-pip python3-venv git
-
-# 3. Install Node.js (for Dashboard)
-curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
-sudo apt install -y nodejs
+sudo apt install -y python3-pip python3-venv git nodejs npm nginx ufw
+npm install -g pm2
 ```
 
-## 📥 Step 4: Deploy Bot
-1. **Clone your repository**:
-   ```bash
-   git clone <YOUR_REPO_URL> bot
-   cd bot
-   ```
-2. **Set up Python Environment**:
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-3. **Set up Dashboard**:
-   ```bash
-   cd crypto-dashboard
-   npm install
-   npm run build
-   cd ..
-   ```
-4. **Configure Secrets**:
-   - Create your `.env` file with your API keys.
-   ```bash
-   nano .env
-   # Paste your API keys here
-   # Press Ctrl+X, then Y, then Enter to save
-   ```
-
-## 🟢 Step 5: Start 24/7 Service
-I have already created the service scripts for you!
-
+### 2. Setup Backend
 ```bash
-# Install the background service
-sudo bash install_service.sh
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+
+# Start manually or copy alpha_bot.service to /etc/systemd/system/
 ```
 
-**That's it! Your bot is now running 24/7 in the cloud.** 🚀
+### 3. Setup Frontend
+```bash
+cd crypto-dashboard
+npm install
+npm run build
+pm2 start npm --name "dashboard" -- start
+pm2 save
+```
+
+### 4. Firewall
+```bash
+ufw allow 22
+ufw allow 80
+ufw allow 8000
+ufw enable
+```
 
 ---
 
 ## 🛠 Management Commands
-- **Check Logs**: `journalctl -u alpha_bot -f`
-- **Stop**: `sudo systemctl stop alpha_bot`
-- **Restart**: `sudo systemctl restart alpha_bot`
+- **Check Bot Logs**: `journalctl -u alpha_bot -f`
+- **Restart Bot**: `sudo systemctl restart alpha_bot`
+- **Check Dashboard**: `pm2 status`
+- **Restart Dashboard**: `pm2 restart dashboard`
