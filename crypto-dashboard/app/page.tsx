@@ -480,7 +480,7 @@ export default function Dashboard() {
             alert("❌ Minimum investment per trade is $5");
             return;
          }
-         const r = await fetchWithTimeout(`${API}/admin/set-trade-usd?amount=${v}`, {
+         const r = await fetchWithTimeout(`${API_REF.current}/admin/set-trade-usd?amount=${v}`, {
             method: "POST",
             headers: { "Accept": "application/json" }
          });
