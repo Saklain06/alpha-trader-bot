@@ -180,9 +180,10 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
 
       const fetchHistory = async () => {
          try {
-            const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-            const protocol = typeof window !== 'undefined' ? window.location.protocol.replace(':', '') : 'http';
-            const apiBase = `${protocol}://${host}:8000`; // Dynamically calculate for Chart too
+            // [PROXY FIX] Use relative path /api for data fetching (goes through Nginx)
+            // If localhost, fallback to direct port 8000
+            const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+            const apiBase = isLocal ? 'http://localhost:8000' : '/api';
 
             const res = await fetch(`${apiBase}/history?symbol=${symbol}&interval=${interval}`);
             const json = await res.json();
