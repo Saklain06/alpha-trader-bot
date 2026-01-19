@@ -434,7 +434,7 @@ export default function Dashboard() {
          // Parallel execution for speed during emergency
          await Promise.all(
             positions.map(p =>
-               fetchWithTimeout(`${API}/paper-sell?trade_id=${p.id}&sell_pct=100`, { method: "POST" })
+               fetchWithTimeout(`${API_REF.current}/paper-sell?trade_id=${p.id}&sell_pct=100`, { method: "POST" })
             )
          );
          await loadData();
