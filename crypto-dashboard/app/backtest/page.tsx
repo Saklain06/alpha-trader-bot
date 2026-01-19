@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import BacktestViewer from "../components/BacktestViewer";
 
 export default function BacktestPage() {
-  const API = "http://localhost:8000";
+  const API = "/api";
 
   // --------------------------
   // Load params from localStorage
@@ -38,7 +38,7 @@ export default function BacktestPage() {
     }
   }, [params]);
 
- 
+
   // --------------------------
   // Auto-refresh backtest results every 2 seconds
   // Detect change of backtest_results.json
@@ -56,7 +56,7 @@ export default function BacktestPage() {
 
     return () => clearInterval(interval);
   }, [lastUpdated]);
-  
+
 
   // --------------------------
   // Run Backtest
@@ -100,9 +100,8 @@ export default function BacktestPage() {
         <button
           onClick={runBacktest}
           disabled={isRunning}
-          className={`col-span-full px-4 py-2 rounded-lg text-white ${
-            isRunning ? "bg-gray-400" : "bg-blue-600 hover:bg-blue-700"
-          }`}
+          className={`col-span-full px-4 py-2 rounded-lg text-white ${isRunning ? "bg-gray-400" : "bg-blue-600 hover:bg-blue-700"
+            }`}
         >
           {isRunning ? "Running…" : "▶ Run Backtest"}
         </button>

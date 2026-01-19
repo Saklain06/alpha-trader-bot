@@ -301,18 +301,9 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
 export default function Dashboard() {
    // Dynamic API Host (No State Trap)
    // Dynamic API Host (Relative Path for Nginx Proxy)
-   const getApiUrl = () => {
-      // Correct logic: Default to /api (Production safe). 
-      // Only use localhost:8000 if explicitly on localhost.
-      if (typeof window !== "undefined" && window.location.hostname === "localhost") {
-         return "http://localhost:8000";
-      }
-      return "/api";
-   };
-
-   // Temporary for initialization (will be updated dynamically)
-   // Temporary for initialization
-   const API_REF = useRef("/api");
+   // FINAL PRODUCTION FIX: Always use relative path
+   // This allows Nginx to handle the proxying (Localhost -> VPS)
+   const API = "/api";
 
    const [stats, setStats] = useState<any>({});
    const [trades, setTrades] = useState<any[]>([]);
@@ -348,17 +339,14 @@ export default function Dashboard() {
 
    const loadData = async () => {
       // Dynamic API URL calculation to avoid closure staleness
-      const currentApi = getApiUrl();
-      API_REF.current = currentApi;
-
       try {
          const [s, t, p, cfg, sigs, smc] = await Promise.all([
-            fetchWithTimeout(`${currentApi}/stats`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/trades`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/positions`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/admin/trade-usd`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/signals`).then(r => r.json()),
-            fetchWithTimeout(`${currentApi}/smc-scanner`).then(r => r.json())
+            fetchWithTimeout(`${API}/stats`).then(r => r.json()),
+            fetchWithTimeout(`${API}/trades`).then(r => r.json()),
+            fetchWithTimeout(`${API}/positions`).then(r => r.json()),
+            fetchWithTimeout(`${API}/admin/trade-usd`).then(r => r.json()),
+            fetchWithTimeout(`${API}/signals`).then(r => r.json()),
+            fetchWithTimeout(`${API}/smc-scanner`).then(r => r.json())
          ]);
          setStats(s);
          setTrades(t);
@@ -417,7 +405,7 @@ export default function Dashboard() {
       if (!confirm("Start AI Agent?")) return;
       setLoading(true);
       try {
-         await fetchWithTimeout(`${API_REF.current}/admin/resume`, { method: "POST" });
+         await fetchWithTimeout(`${API}/admin/resume`, { method: "POST" });
          await loadData();
       } finally {
          setLoading(false);
@@ -431,7 +419,7 @@ export default function Dashboard() {
          // Parallel execution for speed during emergency
          await Promise.all(
             positions.map(p =>
-               fetchWithTimeout(`${API_REF.current}/paper-sell?trade_id=${p.id}&sell_pct=100`, { method: "POST" })
+               fetchWithTimeout(`${API}/paper-sell?trade_id=${p.id}&sell_pct=100`, { method: "POST" })
             )
          );
          await loadData();
@@ -447,7 +435,7 @@ export default function Dashboard() {
       if (loading) return;
       setLoading(true);
       try {
-         await fetchWithTimeout(`${API_REF.current}/paper-sell?trade_id=${id}&sell_pct=${pct}`, { method: "POST" });
+         await fetchWithTimeout(`${API}/paper-sell?trade_id=${id}&sell_pct=${pct}`, { method: "POST" });
          await loadData();
       } finally {
          setLoading(false);
@@ -460,7 +448,7 @@ export default function Dashboard() {
       const tp = tpEdits[p.id] ?? p.tp ?? "";
       setLoading(true);
       try {
-         await fetchWithTimeout(`${API_REF.current}/update-sl-tp?trade_id=${p.id}&sl=${sl || 0}&tp=${tp || 0}`, { method: "POST" });
+         await fetchWithTimeout(`${API}/update-sl-tp?trade_id=${p.id}&sl=${sl || 0}&tp=${tp || 0}`, { method: "POST" });
          alert(`✅ Updated for ${p.symbol}`);
          await loadData();
       } finally {
@@ -477,7 +465,7 @@ export default function Dashboard() {
             alert("❌ Minimum investment per trade is $5");
             return;
          }
-         const r = await fetchWithTimeout(`${API_REF.current}/admin/set-trade-usd?amount=${v}`, {
+         const r = await fetchWithTimeout(`${API}/admin/set-trade-usd?amount=${v}`, {
             method: "POST",
             headers: { "Accept": "application/json" }
          });

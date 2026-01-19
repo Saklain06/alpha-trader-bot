@@ -4,7 +4,7 @@ import { useState } from "react";
 import BacktestViewer from "../../components/BacktestViewer";
 
 export default function CompareStrategiesPage() {
-  const API = "http://localhost:8000";
+  const API = "/api";
 
   const strategies = [
     { name: "EMA 8/21", ema_fast: 8, ema_slow: 21 },
