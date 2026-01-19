@@ -298,17 +298,22 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
 
 export default function Dashboard() {
    // Dynamic API Host (No State Trap)
+   // Dynamic API Host (Relative Path for Nginx Proxy)
    const getApiUrl = () => {
+      // In production (VPS), we use Nginx proxy at /api
+      // In development (localhost), we might still want port 8000 found via next.config.js rewrites or direct
       if (typeof window !== "undefined") {
-         const protocol = window.location.protocol.replace(":", "");
-         const host = window.location.hostname;
-         return `${protocol}://${host}:8000`;
+         // If running on localhost (dev), keeps localhost:8000 for convenience if no proxy
+         if (window.location.hostname === "localhost") return "http://localhost:8000";
+         // On VPS, use relative path which goes through Nginx
+         return "/api";
       }
       return "http://localhost:8000";
    };
 
    // Temporary for initialization (will be updated dynamically)
-   const API_REF = useRef("http://localhost:8000");
+   // Temporary for initialization
+   const API_REF = useRef("/api");
 
    const [stats, setStats] = useState<any>({});
    const [trades, setTrades] = useState<any[]>([]);
