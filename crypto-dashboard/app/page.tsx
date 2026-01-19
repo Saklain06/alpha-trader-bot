@@ -302,15 +302,12 @@ export default function Dashboard() {
    // Dynamic API Host (No State Trap)
    // Dynamic API Host (Relative Path for Nginx Proxy)
    const getApiUrl = () => {
-      // In production (VPS), we use Nginx proxy at /api
-      // In development (localhost), we might still want port 8000 found via next.config.js rewrites or direct
-      if (typeof window !== "undefined") {
-         // If running on localhost (dev), keeps localhost:8000 for convenience if no proxy
-         if (window.location.hostname === "localhost") return "http://localhost:8000";
-         // On VPS, use relative path which goes through Nginx
-         return "/api";
+      // Correct logic: Default to /api (Production safe). 
+      // Only use localhost:8000 if explicitly on localhost.
+      if (typeof window !== "undefined" && window.location.hostname === "localhost") {
+         return "http://localhost:8000";
       }
-      return "http://localhost:8000";
+      return "/api";
    };
 
    // Temporary for initialization (will be updated dynamically)
