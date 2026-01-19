@@ -8,7 +8,7 @@ import uuid
 import asyncio
 import logging
 from datetime import datetime, timezone, date
-from typing import Optional
+
 
 # Third-Party Imports
 import pandas as pd
@@ -70,8 +70,8 @@ logger.info(f"TRADE_MODE: {TRADE_MODE}")
 # ------------------------------------------------------------------------------
 # CONFIG & CONSTANTS
 # ------------------------------------------------------------------------------
-STRATEGY_BOLLINGER_REVERSION = "bollinger_reversion"
-STRATEGY_NAME = STRATEGY_BOLLINGER_REVERSION # Switched from Momentum
+STRATEGY_SMC_5EMA = "SMC_5EMA_Reclaim"
+STRATEGY_NAME = STRATEGY_SMC_5EMA
 AUTO_TRADING_ENABLED = True
 BASE_BALANCE = 200.0
 
@@ -90,12 +90,12 @@ MAX_ORDER_USD = float(os.environ.get("MAX_ORDER_USD", "120.0"))
 MAX_POSITION_COUNT = int(os.environ.get("MAX_POSITION_COUNT", "12"))
 MAX_TRADES_PER_DAY = 30
 PER_SYMBOL_COOLDOWN_SEC = 1 * 3600 # 1 Hour
-MAX_BOLLINGER_POSITIONS = 1
+
 near_hits = [] # Global storage for interesting setups
 smc_scanner_cache = [] # Cache for frontend scanner
 
 # [HARDENING] Global Safety State
-cached_regime = {"value": "bearish", "ts": 0}
+
 consecutive_api_errors = 0
 pause_until_ts = 0
 err_lock = asyncio.Lock()
@@ -110,10 +110,6 @@ def min_notional_ok(symbol, usd):
 
     return usd >= cost_min
 
-
-def log_regime_change(old, new):
-    if old != new:
-        logger.info(f"🟢 [REGIME CHANGE] {old} → {new}")
 
 # ------------------------
 # GLOBAL STATE
@@ -198,56 +194,7 @@ async def safe_fetch_ticker(symbol):
                 logger.critical("🚨 [CRITICAL] 5+ Consecutive API Errors. Pausing for 15 mins.")
         return None
 
-def bollinger_entry_ok(symbol, candles):
-    try:
-        if not candles or len(candles) < 21: return False
-        
-        df = pd.DataFrame(candles, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-        curr = df.iloc[-1]
-        prev = df.iloc[-2]
-        
-        # Calc BB (20, 2)
-        sma = df['close'].rolling(20).mean()
-        std = df['close'].rolling(20).std()
-        lower = sma - (std * 2)
-        
-        # [QUANT] Volatility Check (Applied to all)
-        vol_ok, _ = check_volatility_ok(df, '15m')
-        if not vol_ok: return False
 
-        # Calc RSI
-        delta = df['close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / (loss.replace(0, 0.0001))
-        rsi = 100 - (100 / (1 + rs))
-        
-        curr_rsi = rsi.iloc[-1]
-        prev_rsi = rsi.iloc[-2]
-        curr_lower = lower.iloc[-1]
-        
-        # [QUANT] Confirmation:
-        # 1. Price CLOSES back ABOVE lower band
-        # 2. RSI is rising (current > previous)
-        is_closing_above = curr['close'] > curr_lower and prev['close'] <= lower.iloc[-2]
-        is_rsi_rising = curr_rsi > prev_rsi
-        is_oversold = curr_rsi < 35 # Slightly relaxed threshold for confirmation entries
-        
-        return is_closing_above and is_rsi_rising and is_oversold
-    except Exception as e:
-        logger.error(f"[BOL ERROR] {e}")
-        return False
-
-# [HARDENING] Market Regime Detection (3-State + 5m Cache)
-async def get_btc_regime():
-    """
-    Returns (regime_label, risk_multiplier)
-    Standardized to match the Strong Trend Strategy rules.
-    """
-    is_bullish, price, ema_50 = await regime_utils.check_market_regime(ex_live)
-    label = "bullish" if is_bullish else "bearish"
-    multiplier = 1.0 if is_bullish else 0.0
-    return label, multiplier
 
 
 # ------------------------
@@ -411,6 +358,10 @@ async def can_place_trade(symbol, usd, strategy, equity, locked, free):
                 return False, "symbol_cooldown"
 
     return True, "ok"
+
+# ------------------------
+# HELPERS
+# ------------------------
 
 async def register_trade_open(symbol, strategy):
     state = await get_app_state()
@@ -1064,9 +1015,9 @@ async def strategy_loop():
             # ---------------------------------------------------------
             # MARKET INTELLIGENCE (Aligned with Trading Logic)
             # ---------------------------------------------------------
-            # [FIX] Use already calculated regime
-            btc_regime = "bullish" if is_bullish_regime else "bearish"
-            btc_multiplier = 1.0 if is_bullish_regime else 0.0
+            # [FIX] Force Bullish (User removed filter)
+            btc_regime = "bullish"
+            btc_multiplier = 1.0
             
             # ---------------------------------------------------------
             # PARALLEL EXECUTION: SMC

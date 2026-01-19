@@ -1,6 +1,6 @@
 import math
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime
 
 def safe_fixed(v, dec=10):
     try:

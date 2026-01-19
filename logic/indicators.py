@@ -1,5 +1,5 @@
 import pandas as pd
-import numpy as np
+
 
 def calculate_atr(df, window=14):
     """Calculates Average True Range."""
