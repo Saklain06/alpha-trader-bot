@@ -459,6 +459,78 @@ async def sync_portfolio_with_exchange():
     except Exception as e:
         logger.error(f"[SYNC] Error syncing portfolio: {e}")
 
+    # 4. [REVERSE SYNC] Import Missing Trades (Exchange -> DB)
+    # If we have a balance on Exchange but NO trade in DB, import it.
+    try:
+        # Re-fetch balance to be safe (or reuse if confident)
+        # We iterate through the 'total' balance we already fetched
+        for coin, qty in total.items():
+            if coin == 'USDT': continue
+            if qty <= 0: continue
+            
+            # Construct Symbol (Assumption: USDT pair)
+            symbol = f"{coin}/USDT"
+            
+            # Check if this symbol exists in our Open DB Trades
+            found = False
+            for t in db_trades:
+                if t['symbol'] == symbol:
+                    found = True
+                    break
+            
+            # [HARDENING] Double Check DB before Import (Anti-Race Condition)
+            if not found:
+                # Query DB directly to be absolutely sure it wasn't just opened
+                # by the Strategy Manager in the last few milliseconds
+                check_scan = await db.get_open_trades() # Refresh
+                for scan_t in check_scan:
+                    if scan_t['symbol'] == symbol:
+                        found = True
+                        break
+
+            if not found:
+                 # Check if the value is significant (> $5)
+                 # We need current price
+                 ticker = await safe_fetch_ticker(symbol)
+                 if not ticker: continue
+                 price = num(ticker['last'])
+                 
+                 value_usd = qty * price
+                 if value_usd > 5.0:
+                     logger.warning(f"📥 [SYNC] Found Orphaned Position on Exchange: {symbol} (Qty: {qty}). Importing...")
+                     
+                     # Create Trade Entry
+                     # We don't know original entry, so we use current price as reference
+                     # or maybe 0. It's better to use current price so PnL starts at 0?
+                     # Actually, PnL will be wrong initially, but better than not tracking it.
+                     
+                     new_trade = {
+                        "id": str(uuid.uuid4()),
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "symbol": symbol,
+                        "side": "buy",
+                        "strategy": "Manual_Import", # distinct tag
+                        "entry_price": price, # Approximate
+                        "qty": qty,
+                        "used_usd": value_usd,
+                        "status": "open",
+                        "pnl": 0.0,
+                        "sl": 0.0,
+                        "tp": 0.0,
+                        "exit_price": 0.0,
+                        "current_price": price,
+                        "unrealized_pnl": 0.0,
+                        "fees_usd": 0.0,
+                        "highest_price": price,
+                        "trail_active": False,
+                        "trail_sl": 0.0
+                     }
+                     await db.add_trade(new_trade)
+                     logger.info(f"✅ [IMPORT] Successfully imported {symbol}")
+
+    except Exception as e:
+        logger.error(f"[REVERSE SYNC] Error: {e}")
+
 # ------------------------------------------------------------------------------
 
 # EXECUTION & ORDER MANAGEMENT

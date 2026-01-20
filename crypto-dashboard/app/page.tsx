@@ -183,9 +183,8 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
       const fetchHistory = async () => {
          try {
             // [PROXY FIX] Use relative path /api for data fetching (goes through Nginx)
-            // If localhost, fallback to direct port 8000
-            const isLocal = typeof window !== 'undefined' && window.location.hostname === 'localhost';
-            const apiBase = isLocal ? 'http://localhost:8000' : '/api';
+            // [FIX] Always use /api for Nginx consistency
+            const apiBase = "/api";
 
             const res = await fetch(`${apiBase}/history?symbol=${symbol}&interval=${interval}`);
             const json = await res.json();
@@ -302,8 +301,10 @@ export default function Dashboard() {
    // Dynamic API Host (No State Trap)
    // Dynamic API Host (Relative Path for Nginx Proxy)
    // FINAL PRODUCTION FIX: Always use relative path
-   // This allows Nginx to handle the proxying (Localhost -> VPS)
+   // This allows Nginx to handle the proxying
    const API = "/api";
+   // FORCE_CACHE_BUST: 1768846755
+   console.log("APP VERSION: 2026-01-19-Clean-Build-v2");
 
    const [stats, setStats] = useState<any>({});
    const [trades, setTrades] = useState<any[]>([]);
@@ -350,7 +351,13 @@ export default function Dashboard() {
          ]);
          setStats(s);
          setTrades(t);
-         setPositions(p);
+         setTrades(t);
+
+         // [FIX] Deduplicate positions by Symbol to prevent visual glitches
+         // This handles race conditions where backend might return duplicates momentarily
+         const uniquePositions = Array.from(new Map(p.map((item: any) => [item.symbol, item])).values()) as Position[];
+         setPositions(uniquePositions);
+
          setTradeUsd(cfg.trade_usd);
          // Only overwrite the draft if the user isn't currently editing it
          // Using ref here to avoid stale closure issues in the setInterval
@@ -394,7 +401,7 @@ export default function Dashboard() {
       if (!confirm("Pause AI Agent?")) return;
       setLoading(true);
       try {
-         await fetchWithTimeout(`${API_REF.current}/admin/kill`, { method: "POST" });
+         await fetchWithTimeout(`${API}/admin/kill`, { method: "POST" });
          await loadData();
       } finally {
          setLoading(false);
