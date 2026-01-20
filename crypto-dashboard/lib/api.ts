@@ -1,5 +1,5 @@
-const apiHost = typeof window !== "undefined" ? window.location.hostname : "localhost";
-const API_BASE = `http://${apiHost}:8000`;
+const API_BASE = "/api";
+// FORCE_CACHE_BUST: 1768846755
 
 export async function getStatus() {
   const res = await fetch(`${API_BASE}/status`);
@@ -19,25 +19,5 @@ export async function getTrades() {
   return res.json();
 }
 
-// export async function runBacktest() {
-//   const res = await fetch(`${API_BASE}/backtest`);
-//   return res.json();
-// }
-// export async function runBacktest(params: any) {
-//     const res = await fetch("http://localhost:8000/backtest", {
-//       method: "POST",
-//       headers: { "Content-Type": "application/json" },
-//       body: JSON.stringify(params),
-//     });
-//     return res.json();
-//   }
 
-export async function runBacktest(params: any) {
-  const res = await fetch(`${API_BASE}/backtest`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(params),
-  });
-  return res.json();
-}
 
