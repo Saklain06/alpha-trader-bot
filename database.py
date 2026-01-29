@@ -31,6 +31,7 @@ class Database:
                     sl REAL,
                     tp REAL,
                     exit_price REAL,
+                    exit_time TEXT, -- [NEW]
                     current_price REAL,
                     unrealized_pnl REAL,
                     fees_usd REAL,
@@ -46,6 +47,16 @@ class Database:
                 await db.execute("ALTER TABLE trades ADD COLUMN is_partial INTEGER DEFAULT 0")
             except Exception:
                 pass # Already exists
+
+            # Create users table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    username TEXT PRIMARY KEY,
+                    hashed_password TEXT,
+                    role TEXT DEFAULT 'viewer',
+                    is_active INTEGER DEFAULT 1
+                )
+            """)
 
             # Create app_state table
             await db.execute("""

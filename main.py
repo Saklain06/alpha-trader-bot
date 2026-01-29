@@ -18,10 +18,13 @@ import ccxt.async_support as ccxt
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-# Local Imports
 from database import db
 from logic.strategy import StrategyManager
 from logic.indicators import check_volatility_ok
+
+# Auth Imports
+from fastapi import Depends, HTTPException, status
+import aiosqlite # for auth lookup
 
 load_dotenv()
 
@@ -129,6 +132,41 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ------------------------
+# AUTHENTICATION LOGIC
+# ------------------------
+from fastapi.security import OAuth2PasswordRequestForm
+from auth import create_access_token, get_current_user, verify_password, get_password_hash
+from pydantic import BaseModel
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+@app.post("/token", response_model=Token)
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    # 1. Fetch user from DB
+    async with aiosqlite.connect("trades.db") as dbconn:
+        dbconn.row_factory = aiosqlite.Row
+        cursor = await dbconn.execute("SELECT * FROM users WHERE username = ?", (form_data.username,))
+        user = await cursor.fetchone()
+    
+    if not user:
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    
+    # 2. Verify Password
+    if not verify_password(form_data.password, user['hashed_password']):
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    
+    # 3. Create Token
+    access_token = create_access_token(data={"sub": user['username'], "role": user['role']})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+async def get_current_admin(current_user: dict = Depends(get_current_user)):
+    if current_user['role'] != 'admin':
+        raise HTTPException(status_code=403, detail="Admin privileges required")
+    return current_user
 
 # ------------------------
 # INIT DB
@@ -1041,12 +1079,13 @@ async def strategy_loop():
             
             # [OPTIMIZATION] Time Filter: Avoid Late NY (Death Zone)
             # 17:00 - 20:00 UTC (User stats show -33% WR / Negative PnL here)
-            now_utc = datetime.now(timezone.utc)
-            if 17 <= now_utc.hour < 20:
-                 logger.warning(f"💤 [TIME FILTER] Late NY Session ({now_utc.strftime('%H:%M')} UTC). Sleeping until 20:00 UTC.")
-                 smc_scanner_cache = []
-                 await asyncio.sleep(60)
-                 continue
+            # [UPDATE] Disabled upon user request. Strict logic handles quality now.
+            # now_utc = datetime.now(timezone.utc)
+            # if 17 <= now_utc.hour < 20:
+            #      logger.warning(f"💤 [TIME FILTER] Late NY Session ({now_utc.strftime('%H:%M')} UTC). Sleeping until 20:00 UTC.")
+            #      smc_scanner_cache = []
+            #      await asyncio.sleep(60)
+            #      continue
             
             # [STRATEGY RESET] 1. Market Regime - REMOVED (User Request)
             # We assume Bullish unless Time Filter hits.
@@ -1143,6 +1182,12 @@ async def strategy_loop():
                     else:
                         logger.info(f"🛑 [REGIME BLOCK] {sym}: Signal ignored due to Bearish BTC Regime")
                 
+                # [VISIBILITY] Log Rejections (User Assurance)
+                elif diag and "reason" in diag:
+                     # Only log interesting rejections (not just "Trend Down" which is common? 
+                     # No, log all for now to prove it works).
+                     logger.info(f"🛡️ [FILTER BLOCK] {sym}: {diag['reason']}")
+                
             # [FIX] Also Scan Active Positions for Dashboard Visualization
             active_symbols = [t['symbol'] for t in open_trades]
             missing_active = [s for s in active_symbols if s not in top_gainers]
@@ -1188,7 +1233,7 @@ async def strategy_loop():
 # ------------------------------------------------------------------------------
 # FASTAPI ENDPOINTS
 # ------------------------------------------------------------------------------
-@app.get("/stats")
+@app.get("/stats", dependencies=[Depends(get_current_user)])
 async def stats():
     equity, locked, free, api_status, api_error = await get_equity_locked_free()
     state = await get_app_state()
@@ -1225,21 +1270,20 @@ async def stats():
         "reset_time_ts": int(datetime.now().replace(hour=23, minute=59, second=59, microsecond=0).timestamp() * 1000)
     }
 
-@app.get("/trades")
+@app.get("/trades", dependencies=[Depends(get_current_user)])
 async def get_trades():
     return await db.get_all_trades_desc()
 
-@app.get("/positions")
+@app.get("/positions", dependencies=[Depends(get_current_user)])
 async def get_positions():
-    # [HARDENING] Sync before returning to ensure frontend is 100% accurate
-    await sync_portfolio_with_exchange()
+    # [OPTIMIZATION] Read from DB directly. Background worker handles sync.
     return await db.get_open_trades()
 
-@app.get("/signals")
+@app.get("/signals", dependencies=[Depends(get_current_user)])
 async def get_signals():
     return near_hits
 
-@app.get("/history")
+@app.get("/history", dependencies=[Depends(get_current_user)])
 async def get_history(symbol: str, interval: str = "15m"):
     """Fetch primitive OHLCV history for custom charts"""
     try:
@@ -1295,38 +1339,38 @@ async def get_history(symbol: str, interval: str = "15m"):
         logger.error(f"History fetch error: {e}")
         return {"candles": [], "ema20": [], "ema50": [], "rsi": []}
 
-@app.get("/smc-scanner")
+@app.get("/smc-scanner", dependencies=[Depends(get_current_user)])
 async def get_smc_scanner():
     return smc_scanner_cache
 
-@app.post("/paper-sell")
+@app.post("/paper-sell", dependencies=[Depends(get_current_admin)])
 async def paper_sell(trade_id: str = Query(...), sell_pct: float = Query(100.0)):
     await execute_sell(trade_id, sell_pct, reason="manual_web")
     return {"status": "ok"}
 
-@app.post("/update-sl-tp")
+@app.post("/update-sl-tp", dependencies=[Depends(get_current_admin)])
 async def update_sl_tp(trade_id: str = Query(...), sl: float = Query(...), tp: float = Query(...)):
     await db.update_trade(trade_id, {"sl": sl, "tp": tp})
     return {"status": "ok"}
 
-@app.post("/admin/kill")
+@app.post("/admin/kill", dependencies=[Depends(get_current_admin)])
 async def kill():
     await db.set_state_key("kill_switch", True)
     await db.set_state_key("auto_trading", False)
     return {"status": "killed"}
 
-@app.post("/admin/resume")
+@app.post("/admin/resume", dependencies=[Depends(get_current_admin)])
 async def resume():
     await db.set_state_key("kill_switch", False)
     await db.set_state_key("auto_trading", True)
     return {"status": "resumed"}
 
-@app.get("/admin/trade-usd")
+@app.get("/admin/trade-usd", dependencies=[Depends(get_current_admin)])
 async def get_trade_usd():
     state = await get_app_state()
     return {"trade_usd": state.get("trade_usd", 10.0)}
 
-@app.post("/admin/set-trade-usd")
+@app.post("/admin/set-trade-usd", dependencies=[Depends(get_current_admin)])
 async def set_trade_usd(amount: float = Query(..., gt=0)):
     logger.info(f"[ADMIN] Updating trade_usd to ${amount}")
     await db.set_state_key("trade_usd", float(amount))

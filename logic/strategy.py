@@ -38,10 +38,10 @@ class StrategyManager:
         is_qualified = True
         if context:
             # 2a. 1H Trend Check
-            if 'ohlcv_1h' in context and context['ohlcv_1h']:
+            if 'ohlcv_1h' in context and context['ohlcv_1h'] and len(context['ohlcv_1h']) >= 2:
                  df_1h = pd.DataFrame(context['ohlcv_1h'], columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-                 ema50_1h = calculate_ema(df_1h['close'], 50).iloc[-1]
-                 close_1h = df_1h['close'].iloc[-1]
+                 ema50_1h = calculate_ema(df_1h['close'], 50).iloc[-2]
+                 close_1h = df_1h['close'].iloc[-2]
                  if close_1h <= ema50_1h:
                      is_qualified = False
             
@@ -92,27 +92,8 @@ class StrategyManager:
         # 3. Reclaim candle is bullish
         curr_is_bullish = row['close'] > row['open']
 
-        # 4. Momentum Filter: Reclaim candle closes ABOVE previous candle's HIGH
-        momentum_confirmed = row['close'] > prev_row['high']
-        
-        if not (prev_closed_below and curr_closed_above and curr_is_bullish and momentum_confirmed):
-             return False, {"reason": "No Valid 5-EMA Reclaim (Momentum Fail)"}
-
-        # ------------------------
-        # TRADE BLOCK CONDITIONS
-        # ------------------------
-        
-        # 1. Upper wick > 50% of candle range
-        candle_range = row['range']
-        upper_wick = row['high'] - row['close']
-        if candle_range > 0 and (upper_wick / candle_range) > 0.50:
-             return False, {"reason": "Wick Rejection (>50%)"}
-
-        # 2. Reclaim candle is unusually large
-        # Heuristic: Range > 3x Average Range (10)
-        avg_range = row['avg_range']
-        if avg_range > 0 and candle_range > (3 * avg_range):
-             return False, {"reason": "Candle Too Large (Blow-off Risk)"}
+        if not (prev_closed_below and curr_closed_above and curr_is_bullish):
+             return False, {"reason": "No Valid 5-EMA Reclaim"}
 
         # ------------------------
         # STOP LOSS RULE

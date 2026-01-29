@@ -18,7 +18,7 @@ frozenlist==1.8.0
 h11==0.16.0
 idna==3.11
 multidict==6.7.0
-numpy==2.3.5
+numpy>=1.26.0
 pandas==2.3.3
 propcache==0.4.1
 pycares==4.11.0
@@ -39,3 +39,9 @@ urllib3==2.6.2
 uvicorn==0.38.0
 yarl==1.22.0
 aiosqlite==0.20.0
+
+# Auth
+passlib[bcrypt]
+python-jose[cryptography]
+python-multipart
+bcrypt==4.0.1

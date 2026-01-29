@@ -22,7 +22,9 @@ def create_zip():
         ".env",
         "setup_hostinger.sh",
         "alpha_bot.service",
-        "DEPLOYMENT.md"
+        "DEPLOYMENT.md",
+        "auth.py",
+        "seed_user.py"
     ]
     subprocess.run(cmd + ["-x", "crypto-dashboard/node_modules/*", "crypto-dashboard/.next/*", "*.pyc", "__pycache__/*"], check=True)
     print("✅ Zip created.")
@@ -80,6 +82,10 @@ if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
 ./venv/bin/pip install -r requirements.txt
+
+# Run DB Migration (Fix Missing Columns)
+echo "🔄 Running DB Migration..."
+python3 migrate_db_v2.py
 
 # Build Frontend (Nuclear Cache Clear)
 cd crypto-dashboard
