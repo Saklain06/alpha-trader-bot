@@ -1,0 +1,13 @@
+============================================================
+TESTING RISK PERCENTAGE UPDATE (VPS LOCALHOST)
+============================================================
+Initial GET: 200 -> {'risk_pct': 2.0}
+
+Updating to 1.5% (0.015)...
+POST Response: 200 -> {'status': 'updated', 'risk_pct': 0.015}
+Verify GET: 200 -> {'risk_pct': 0.015}
+✅ SUCCESS: Value updated correctly!
+
+Reverting to 2.0% (0.02)...
+Revert POST: 200 -> {'status': 'updated', 'risk_pct': 0.02}
+============================================================

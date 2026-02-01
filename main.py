@@ -891,24 +891,24 @@ async def watcher_loop():
                 continue
 
             # [HARDENING] Watcher Safety Cleanup
-            # If we find a trade open in DB but empty in Wallet, close it.
-            try:
-                bal = await ex_live.fetch_balance()
-                total = bal.get('total', {})
-                for t in trades:
-                    coin = t['symbol'].split('/')[0]
-                    real_qty = total.get(coin, 0.0)
-                    if real_qty <= 1e-8 or real_qty < (t['qty'] * 0.05):
-                        logger.warning(f"🧹 [WATCHER CLEANUP] {t['symbol']} found empty/dust ({real_qty}). Auto-closing.")
-                        await db.update_trade(t['id'], {
-                            "status": "closed",
-                            "exit_time": datetime.now(timezone.utc).isoformat(),
-                            "pnl": 0,
-                            "exit_price": 0
-                        })
-                        await register_trade_close(0.0, t['symbol'])
-            except Exception as e:
-                logger.error(f"[WATCHER CLEANUP ERROR] {e}")
+            if TRADE_MODE == "live":
+                try:
+                    bal = await ex_live.fetch_balance()
+                    total = bal.get('total', {})
+                    for t in trades:
+                        coin = t['symbol'].split('/')[0]
+                        real_qty = total.get(coin, 0.0)
+                        if real_qty <= 1e-8 or real_qty < (t['qty'] * 0.05):
+                            logger.warning(f"🧹 [WATCHER CLEANUP] {t['symbol']} found empty/dust ({real_qty}). Auto-closing.")
+                            await db.update_trade(t['id'], {
+                                "status": "closed",
+                                "exit_time": datetime.now(timezone.utc).isoformat(),
+                                "pnl": 0,
+                                "exit_price": 0
+                            })
+                            await register_trade_close(0.0, t['symbol'])
+                except Exception as e:
+                    logger.error(f"[WATCHER CLEANUP ERROR] {e}")
 
             for t in trades:
                 try:
