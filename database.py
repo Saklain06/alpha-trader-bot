@@ -1,5 +1,6 @@
 import aiosqlite
 import json
+import asyncio # [NEW]
 
 from datetime import date
 from typing import Dict, List, Optional, Any
@@ -10,13 +11,24 @@ class Database:
     def __init__(self, db_file=DB_FILE):
         self.db_file = db_file
 
+    async def _execute_with_retry(self, func, *args, **kwargs):
+        """Helper to retry DB operations if they are locked."""
+        for i in range(3):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if "locked" in str(e).lower() and i < 2:
+                    await asyncio.sleep(0.5 * (i + 1))
+                    continue
+                raise e
+
     async def init_db(self):
         async with aiosqlite.connect(self.db_file) as db:
             # [HARDENING] Enable WAL mode for concurrency
-            await db.execute("PRAGMA journal_mode=WAL;")
+            await self._execute_with_retry(db.execute, "PRAGMA journal_mode=WAL;")
             
             # Create trades table
-            await db.execute("""
+            await self._execute_with_retry(db.execute, """
                 CREATE TABLE IF NOT EXISTS trades (
                     id TEXT PRIMARY KEY,
                     time TEXT,
@@ -165,7 +177,7 @@ class Database:
     async def set_state_key(self, key: str, value: Any):
         async with aiosqlite.connect(self.db_file) as db:
             val_str = json.dumps(value)
-            await db.execute(
+            await self._execute_with_retry(db.execute,
                 "INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)",
                 (key, val_str)
             )

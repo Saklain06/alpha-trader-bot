@@ -55,8 +55,9 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
    const chartContainerRef = useRef<HTMLDivElement>(null);
    const chartRef = useRef<any>(null);
    const seriesRef = useRef<any>(null);
-   const ema5Ref = useRef<any>(null); // [NEW] EMA 5
+   const ema20Ref = useRef<any>(null); // [NEW] EMA 20
    const ema50Ref = useRef<any>(null);
+   const ema200Ref = useRef<any>(null); // [NEW] EMA 200
    const rsiRef = useRef<any>(null);
    const [error, setError] = useState<string | null>(null);
    const [timeLeft, setTimeLeft] = useState<string>("--:--");
@@ -131,10 +132,12 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
          wickDownColor: '#F23645'
       });
 
-      // EMA 5 (Cyan / Fast)
-      const ema5 = chart.addSeries(LineSeries, { color: '#06B6D4', lineWidth: 2, crosshairMarkerVisible: false, priceScaleId: 'right', title: 'EMA 5' });
-      // EMA 50 (Blue / Slow)
+      // EMA 20 (Yellow / Fast)
+      const ema20 = chart.addSeries(LineSeries, { color: '#EAB308', lineWidth: 2, crosshairMarkerVisible: false, priceScaleId: 'right', title: 'EMA 20' });
+      // EMA 50 (Blue / Medium)
       const ema50 = chart.addSeries(LineSeries, { color: '#3B82F6', lineWidth: 2, crosshairMarkerVisible: false, priceScaleId: 'right', title: 'EMA 50' });
+      // EMA 200 (Purple / Slow)
+      const ema200 = chart.addSeries(LineSeries, { color: '#A855F7', lineWidth: 2, crosshairMarkerVisible: false, priceScaleId: 'right', title: 'EMA 200' });
 
       // RSI Series (Bottom Pane)
       const rsiSeries = chart.addSeries(LineSeries, {
@@ -157,8 +160,9 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
 
       chartRef.current = chart;
       seriesRef.current = candlestickSeries;
-      ema5Ref.current = ema5; // [NEW]
+      ema20Ref.current = ema20;
       ema50Ref.current = ema50;
+      ema200Ref.current = ema200;
       rsiRef.current = rsiSeries;
 
       const handleResize = () => {
@@ -174,8 +178,9 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
          chart.remove();
          chartRef.current = null;
          seriesRef.current = null;
-         ema5Ref.current = null; // [NEW]
+         ema20Ref.current = null;
          ema50Ref.current = null;
+         ema200Ref.current = null;
          rsiRef.current = null;
       };
    }, [isDark, symbol]);
@@ -203,12 +208,11 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
             if (Array.isArray(candles) && candles.length > 0) {
                seriesRef.current.setData(candles);
 
-               // Handle EMA 5 data (Backend sends 'ema5' and legacy 'ema20')
-               if (ema5Ref.current) {
-                  const data = json.ema5 || json.ema20;
-                  if (data) ema5Ref.current.setData(data);
-               }
+               // Handle EMA Data
+               if (ema20Ref.current && json.ema20) ema20Ref.current.setData(json.ema20);
                if (ema50Ref.current && json.ema50) ema50Ref.current.setData(json.ema50);
+               if (ema200Ref.current && json.ema200) ema200Ref.current.setData(json.ema200);
+
                if (rsiRef.current && json.rsi) rsiRef.current.setData(json.rsi);
 
                // Only fit content on the very first load for this symbol/interval

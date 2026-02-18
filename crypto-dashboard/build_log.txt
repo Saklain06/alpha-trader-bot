@@ -1,0 +1,64 @@
+
+> trading-dashboard@0.1.0 build
+> next build
+
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+   ▲ Next.js 16.0.8 (Turbopack)
+   - Environments: .env.production
+
+ ⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+   Creating an optimized production build ...
+[baseline-browser-mapping] The data in this module is over two months old.  To ensure accurate Baseline data, please update: `npm i baseline-browser-mapping@latest -D`
+
+> Build error occurred
+Error: Turbopack build failed with 1 errors:
+./app/dashboard/page.tsx:57:10
+Ecmascript file had an error
+[0m [90m 55 |[39m    [36mconst[39m chartContainerRef [33m=[39m useRef[33m<[39m[33mHTMLDivElement[39m[33m>[39m([36mnull[39m)[33m;[39m
+ [90m 56 |[39m    [36mconst[39m chartRef [33m=[39m useRef[33m<[39m[33many[39m[33m>[39m([36mnull[39m)[33m;[39m
+[31m[1m>[22m[39m[90m 57 |[39m    [36mconst[39m chartRef [33m=[39m useRef[33m<[39m[33many[39m[33m>[39m([36mnull[39m)[33m;[39m
+ [90m    |[39m          [31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m[31m[1m^[22m[39m
+ [90m 58 |[39m    [36mconst[39m seriesRef [33m=[39m useRef[33m<[39m[33many[39m[33m>[39m([36mnull[39m)[33m;[39m
+ [90m 59 |[39m    [36mconst[39m ema20Ref [33m=[39m useRef[33m<[39m[33many[39m[33m>[39m([36mnull[39m)[33m;[39m [90m// [NEW] EMA 20[39m
+ [90m 60 |[39m    [36mconst[39m ema50Ref [33m=[39m useRef[33m<[39m[33many[39m[33m>[39m([36mnull[39m)[33m;[39m[0m
+
+the name `chartRef` is defined multiple times
+
+Import traces:
+  Client Component Browser:
+    ./app/dashboard/page.tsx [Client Component Browser]
+    ./app/dashboard/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./app/dashboard/page.tsx [Client Component SSR]
+    ./app/dashboard/page.tsx [Server Component]
+
+
+    at <unknown> (./app/dashboard/page.tsx:57:10)
+
+  #  Node.js[36692]: void node::ResetStdio() at ../src/node.cc:751
+  #  Assertion failed: !(err != 0) || (err == -1 && (*__errno_location ()) == 1)
+
+----- Native stack trace -----
+
+ 1: 0xcb3137 node::Assert(node::AssertionInfo const&) [npm run build]
+ 2: 0xc5f934  [npm run build]
+ 3: 0x7fb852a01495  [/lib/x86_64-linux-gnu/libc.so.6]
+ 4: 0x7fb852a01610 on_exit [/lib/x86_64-linux-gnu/libc.so.6]
+ 5: 0xbbf62f node::DefaultProcessExitHandlerInternal(node::Environment*, node::ExitCode) [npm run build]
+ 6: 0xc1ef1f node::Environment::Exit(node::ExitCode) [npm run build]
+ 7: 0xf4e7cf v8::internal::FunctionCallbackArguments::Call(v8::internal::CallHandlerInfo) [npm run build]
+ 8: 0xf4f03d  [npm run build]
+ 9: 0xf4f505 v8::internal::Builtin_HandleApiCall(int, unsigned long*, v8::internal::Isolate*) [npm run build]
+10: 0x1959df6  [npm run build]
+
+  #  Node.js[36692]: void node::ResetStdio() at ../src/node.cc:751
+  #  Assertion failed: !(err != 0) || (err == -1 && (*__errno_location ()) == 1)
+
+----- Native stack trace -----
+
+ 1: 0xcb3137 node::Assert(node::AssertionInfo const&) [npm run build]
+ 2: 0xc5f934  [npm run build]
+ 3: 0xc5ff4d node::TrapWebAssemblyOrContinue(int, siginfo_t*, void*) [npm run build]
+ 4: 0x7fb8529fe520  [/lib/x86_64-linux-gnu/libc.so.6]
+ 5: 0x18152650 

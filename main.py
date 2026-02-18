@@ -89,10 +89,18 @@ DEFAULT_SLIPPAGE_PCT = float(os.environ.get("DEFAULT_SLIPPAGE_PCT", "0.001"))
 
 MAX_ORDER_USD = float(os.environ.get("MAX_ORDER_USD", "120.0"))
 
+# [STRATEGY] Capital-First v1 Constants
+ALLOWED_SYMBOLS = [
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'BNB/USDT', 'XRP/USDT', 
+    'ADA/USDT', 'AVAX/USDT', 'LINK/USDT', 'NEAR/USDT', 'DOT/USDT'
+]
+DAILY_LOSS_LIMIT_R = -4.0
+STRATEGY_DEATH_LIMIT_R = -8.0
+
 # [QUANT UPDATES] Low frequency, High quality
 MAX_POSITION_COUNT = int(os.environ.get("MAX_POSITION_COUNT", "12"))
-MAX_TRADES_PER_DAY = 30
-PER_SYMBOL_COOLDOWN_SEC = 1 * 3600 # 1 Hour
+MAX_TRADES_PER_DAY = 6 # [STRICT] Max 6 trades total
+PER_SYMBOL_COOLDOWN_SEC = 0 # Handled by "Max 3 trades per coin" check
 
 near_hits = [] # Global storage for interesting setups
 smc_scanner_cache = [] # Cache for frontend scanner
@@ -102,6 +110,8 @@ smc_scanner_cache = [] # Cache for frontend scanner
 consecutive_api_errors = 0
 pause_until_ts = 0
 err_lock = asyncio.Lock()
+scanner_semaphore = asyncio.Semaphore(10) # [NEW] Prevent bursting too many connections
+last_market_reload = 0 # [NEW] Track market refresh
 
 def min_notional_ok(symbol, usd):
     market = ex_live.markets.get(symbol)
@@ -359,10 +369,13 @@ async def can_place_trade(symbol, usd, strategy, equity, locked, free):
     if state.get("kill_switch"): return False, "kill_switch"
 
     if usd > MAX_ORDER_USD: return False, "order_too_large"
-    if state.get("trades_today", 0) >= MAX_TRADES_PER_DAY: return False, "trade_limit"
-
-    open_trades = await db.get_open_trades()
+    if state.get("trades_today", 0) >= MAX_TRADES_PER_DAY: return False, "trade_limit_day"
     
+    # [STRICT] Max 3 trades per coin per day
+    coin_trades = state.get(f"trades_{symbol}_today", 0)
+    if coin_trades >= 3: return False, "trade_limit_coin"
+
+    # Max Parallel Trades
     # [DYNAMIC] Calculate position limits based on current capital (passed in)
     max_positions, _ = calculate_position_limits(equity, locked, free, len(open_trades))
     
@@ -404,33 +417,45 @@ async def can_place_trade(symbol, usd, strategy, equity, locked, free):
 async def register_trade_open(symbol, strategy):
     state = await get_app_state()
     
-    # Update trades today
-    current_today = state.get("trades_today", 0) + 1
-    await db.set_state_key("trades_today", current_today)
+    # Increment daily counters
+    state = await db.get_state()
+    today_trades = state.get("trades_today", 0) + 1
+    state["trades_today"] = today_trades
     
+    # Coin specific counter
+    coin_key = f"trades_{symbol}_today"
+    coin_trades = state.get(coin_key, 0) + 1
+    state[coin_key] = coin_trades
+    
+    await db.set_state_key("trades_today", today_trades)
+    await db.set_state_key(coin_key, coin_trades)
+
     # Update Timestamp map
     ts_map = state.get("last_trade_ts_map", {})
     ts_map[f"{strategy}:{symbol}"] = datetime.now().timestamp()
     await db.set_state_key("last_trade_ts_map", ts_map)
 
-async def register_trade_close(pnl, symbol):
+async def register_pnl_to_global(pnl):
+    """Update total and daily realized PnL in the global state immediately."""
+    state = await get_app_state()
+    
+    daily = safe(state.get("daily_realized_pnl", 0.0) + pnl)
+    await db.set_state_key("daily_realized_pnl", daily)
+    
+    total = safe(state.get("total_realized_pnl", 0.0) + pnl)
+    await db.set_state_key("total_realized_pnl", total)
+
+async def register_trade_close(pnl_unused, symbol):
+    """Side effects of a full trade closure (cooldowns, etc.)"""
     state = await get_app_state()
     
     # [QUANT] Set 1-Hour Cooldown
     cooldowns = state.get("exit_cooldowns", {})
-    # Expire in 1 hour (3600 seconds)
+    # Expire in 1 hour
     cooldowns[symbol] = datetime.now().timestamp() + (1 * 3600)
     await db.set_state_key("exit_cooldowns", cooldowns)
 
-    # Daily PnL
-    daily = state.get("daily_realized_pnl", 0.0) + pnl
-    await db.set_state_key("daily_realized_pnl", daily)
-    
-    # [QUANT] Count Losses - REMOVED
-    
-    # Total PnL
-    total = state.get("total_realized_pnl", 0.0) + pnl
-    await db.set_state_key("total_realized_pnl", total)
+    # Note: PnL is now handled in real-time by register_pnl_to_global in execute_sell
 
 async def symbol_exposure_ok(symbol, additional_usd):
     trades = await db.get_open_trades()
@@ -573,7 +598,7 @@ async def sync_portfolio_with_exchange():
 
 # EXECUTION & ORDER MANAGEMENT
 # ------------------------------------------------------------------------------
-async def execute_buy(symbol, sl_pct, tp_pct, strategy, sl_absolute=None, btc_multiplier=1.0):
+async def execute_buy(symbol, sl_pct, tp_pct, strategy, sl_absolute=None):
     await daily_reset_if_needed()
     
     ticker = await safe_fetch_ticker(symbol)
@@ -595,42 +620,33 @@ async def execute_buy(symbol, sl_pct, tp_pct, strategy, sl_absolute=None, btc_mu
         logger.error(f"[BUY FAIL] {symbol}: No SL provided (Absolute or %).")
         return
     
-    # [QUANT] 2. Position Sizing (Risk 2% of Equity * BTC Regime)
+    # [QUANT]    # 2. Position Sizing (Fixed 2% of Equity)
     equity, locked, free, _, _ = await get_equity_locked_free()
     
-    BASE_RISK = 0.02 # 2% (Modified for Growth)
-    final_risk_pct = BASE_RISK * btc_multiplier
-    risk_amount = equity * final_risk_pct
+    BASE_RISK = 0.02 # 2% (Capital-First)
+    # [RISK MANAGEMENT] 1% Equity Risk
+    risk_amount = equity * 0.01 
     
     # Qty = Risk / Distance
     if sl_dist_usd > 0:
         target_qty = risk_amount / sl_dist_usd
         risk_based_usd = target_qty * price
     else:
-        # Fallback if SL is 0 
-        risk_based_usd = 20.0 
+        logger.error(f"[BUY SKIP] {symbol}: Invalid SL distance.")
+        return 
         
-    # [QUANT] 3. Apply Limits
+    # 3. Apply Limits
     state = await get_app_state()
     user_cap_usd = float(state.get("trade_usd", 20.0))
-    
-    # [RULE] Harmonized Sizing Logic
-    # We take the SMALLEST of three values:
-    # 1. Risk-Based Size (Calculated to lose 2%)
-    # 2. User Safety Cap (From Control Panel)
-    # 3. 50% of Equity (Blow-up Prevention)
-    
-    equity_cap = equity * 0.50
-    
     # Calculate Final Size
-    usd = min(risk_based_usd, user_cap_usd, equity_cap, free * 0.98)
+    usd = min(risk_based_usd, user_cap_usd, free * 0.98)
     
     # Log if we are being capped by safety rules
     if usd < risk_based_usd:
-         reason = "User Cap" if usd == user_cap_usd else "50% Portfolio Limit"
+         reason = "User Cap" if usd == user_cap_usd else "Free Capital Limit"
          logger.info(f"🛡️ [SAFETY RESIZE] {symbol}: RiskSize ${risk_based_usd:.2f} -> Capped at ${usd:.2f} ({reason})")
     
-    logger.info(f"⚖️ [SIZING] {symbol} | Risk: {final_risk_pct*100:.1f}% (${risk_amount:.2f}) | Size: ${usd:.2f}")
+    logger.info(f"⚖️ [SIZING] {symbol} | Risk: 2.0% (${risk_amount:.2f}) | Size: ${usd:.2f}")
 
     if usd < 5: 
         logger.info(f"[BUY SKIP] {symbol}: Size ${usd:.2f} too small")
@@ -714,11 +730,10 @@ async def execute_buy(symbol, sl_pct, tp_pct, strategy, sl_absolute=None, btc_mu
     else:
         # Paper
         exec_price = price
-        qty = safe(usd / price)
-        used = safe(qty * exec_price)
-        fees = safe(used * COMMISSION_PCT)
-        sl = safe(exec_price * (1 - sl_pct / 100)) if sl_pct else 0.0
-        tp = safe(exec_price * (1 + tp_pct / 100)) if tp_pct else 0.0
+        fees = safe(usd * COMMISSION_PCT)
+        qty = safe((usd / price) * (1 - COMMISSION_PCT)) # Fee deducted from asset
+        used = usd # Porton of USDT wallet spent
+        # Note: sl and tp are already calculated from sl_absolute or sl_pct above
         logger.info(f"📑 [PAPER OPEN] {strategy} | {symbol} @ {exec_price} | Qty: {qty} | SL: {sl} | TP: {tp}")
 
     # Merge or New
@@ -847,7 +862,8 @@ async def execute_sell(trade_id, pct=100.0, reason="manual"):
             exec_price = price
             fees = safe(exec_price * sell_qty * COMMISSION_PCT)
 
-        pnl = safe((exec_price - trade['entry_price']) * sell_qty - fees)
+        pnl = safe((exec_price * sell_qty) - (trade['used_usd'] * (sell_qty / trade['qty'])) - fees)
+        await register_pnl_to_global(pnl) # [FIX] Real-time Net Earnings update
         
         remaining = safe(trade['qty'] - sell_qty)
         
@@ -862,7 +878,7 @@ async def execute_sell(trade_id, pct=100.0, reason="manual"):
                 "fees_usd": safe(trade['fees_usd'] + fees),
                 "exit_time": datetime.now(timezone.utc).isoformat()
             })
-            await register_trade_close(pnl, trade['symbol'])
+            await register_trade_close(0.0, trade['symbol'])
             logger.info(f"💰 [TRADE CLOSED] {trade['symbol']} | PnL: {pnl:.4f} | Reason: {reason}")
         else:
             await db.update_trade(trade_id, {
@@ -891,6 +907,7 @@ async def watcher_loop():
                 continue
 
             # [HARDENING] Watcher Safety Cleanup
+            # If we find a trade open in DB but empty in Wallet, close it.
             if TRADE_MODE == "live":
                 try:
                     bal = await ex_live.fetch_balance()
@@ -934,7 +951,7 @@ async def watcher_loop():
                     if not ticker: continue
                     price = num(ticker['last'])
                     
-                    unreal = (price - t['entry_price']) * t['qty']
+                    unreal = (price * t['qty']) - t['used_usd']
                     highest = max(t['highest_price'], price)
                     
                     updates = {
@@ -944,22 +961,40 @@ async def watcher_loop():
                     }
                     
                     # -----------------------------------------------
-                    # STOP LOSS & TAKE PROFIT CHECKS (UNIVERSAL)
+                    # STOP LOSS & TAKE PROFIT CHECKS (Capital-First 2-Stage)
                     # -----------------------------------------------
                     t_sl = t.get('sl', 0.0)
-                    t_tp = t.get('tp', 0.0)
+                    dist = abs(t['entry_price'] - t_sl) if t_sl > 0 else 0
+                    r_multiple = (price - t['entry_price']) / dist if dist > 0 else 0
                     
+                    # 1. STOP LOSS (100% Exit)
                     if t_sl > 0 and price <= t_sl:
                          logger.info(f"🛑 [SL HIT] {symbol} @ {price} (SL: {t_sl})")
-                         await db.update_trade(t['id'], updates)
                          await execute_sell(t['id'], 100, "stop_loss")
                          continue
                     
-                    if t_tp > 0 and price >= t_tp:
-                         logger.info(f"🎯 [TP HIT] {symbol} @ {price} (TP: {t_tp})")
-                         await db.update_trade(t['id'], updates)
-                         await execute_sell(t['id'], 100, "take_profit")
+                    # 2. STAGE 1: Partial TP (+1.5R)
+                    if not t.get('is_partial') and r_multiple >= 1.5:
+                         logger.info(f"💰 [PARTIAL TP] {symbol} reached +1.5R. Selling 50%.")
+                         await execute_sell(t['id'], 50, "partial_tp")
+                         await db.update_trade(t['id'], {"is_partial": 1})
                          continue
+                         
+                    # 3. STAGE 2: Runner Exit (15m EMA5 Close Reclaim)
+                    if t.get('is_partial'):
+                         ohlcv_w = await ex_live.fetch_ohlcv(symbol, '15m', limit=20)
+                         if len(ohlcv_w) >= 2:
+                              # Last CLOSED candle (N-1)
+                              prev_c_close = ohlcv_w[-2][4]
+                              
+                              # EMA5 manual calc for the check
+                              closes_w = [x[4] for x in ohlcv_w]
+                              ema5_w = pd.Series(closes_w).ewm(span=5, adjust=False).mean().iloc[-2]
+                              
+                              if prev_c_close < ema5_w:
+                                   logger.info(f"🏃 [RUNNER EXIT] {symbol} closed below EMA5 ({prev_c_close:.2f} < {ema5_w:.2f}).")
+                                   await execute_sell(t['id'], 100, "runner_ema5")
+                                   continue
 
                     # [RULE] No trailing stop or partial exits.
                     # Simple update of PnL stats.
@@ -985,47 +1020,28 @@ async def watcher_loop():
 # ------------------------
 scan_sem = asyncio.Semaphore(10) # Limit concurrent requests
 
-async def scan_smc_target(symbol, ex, active_strategies):
+async def scan_smc_target(symbol, ex, active_strategies, context=None):
     """
     Returns: (symbol, scanner_items, diagnostic, should_buy, bullish_trend_found)
     """
     async with scan_sem:
         try:
-            # 1. [CONTEXT] Fetch 1h for Directional Bias (Higher TF)
-            ohlcv_context = await ex.fetch_ohlcv(symbol, '1h', limit=100)
-            if not ohlcv_context or len(ohlcv_context) < 50: return (symbol, None, None, False, False)
-            
-            df_context = pd.DataFrame(ohlcv_context, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-            
-            # [STRATEGY] Calculate Symbol 24H Change for Context
-             # Helper to calc 24h change Approx (24 candles)
-            try:
-                open_24h = df_context['open'].iloc[-25] if len(df_context) >= 25 else df_context['open'].iloc[0]
-                curr_close = df_context['close'].iloc[-1]
-                symbol_pct_change = ((curr_close - open_24h) / open_24h) * 100
-            except: symbol_pct_change = 0.0
+            if not context:
+                # 1. [CONTEXT] Fetch 1h for Directional Bias (Higher TF)
+                ohlcv_context = await ex.fetch_ohlcv(symbol, '1h', limit=200)
+                if not ohlcv_context or len(ohlcv_context) < 50: return (symbol, None, None, False, False)
+                context = {
+                    "ohlcv_1h": ohlcv_context,
+                    "symbol_pct_change": 0.0 # Placeholder
+                }
 
-            # Context Analysis
-            trend_bullish = True 
-
-            
-            # 1h RSI (REMOVED)
-            # [USER REQUEST] RSI logic completely removed.
-            
-            context = {
-                "trend_bullish": trend_bullish,
-                "ohlcv_1h": ohlcv_context, # Pass raw data for HTF OB analysis
-                "symbol_pct_change": symbol_pct_change, # [NEW]
-                "btc_pct_change": active_strategies.get("btc_pct", 0.0) if isinstance(active_strategies, dict) else 0.0 # Hacky pass
-            }
-
-            # 2. [ENTRY] Fetch 15m for Entry (Strong Trend Strategy)
+            # 2. [ENTRY] Fetch 15m for Entry (15m EMA Reclaim)
             ohlcv_entry = await ex.fetch_ohlcv(symbol, '15m', limit=100)
             if not ohlcv_entry or len(ohlcv_entry) < 60:
                 logger.warning(f"[DEBUG] {symbol} not enough 15m data: {len(ohlcv_entry) if ohlcv_entry else 0}")
                 return (symbol, None, None, False, False)
             
-            # 3. Check Signal with Multi-Timeframe Logic
+            # 3. Check Signal with Multi-Timeframe Logic (EMA Pullback)
             is_valid_signal, diagnostic = StrategyManager.check_signal(symbol, ohlcv_entry, context)
             
             # Enrich diagnostic with Context
@@ -1046,7 +1062,7 @@ async def scan_smc_target(symbol, ex, active_strategies):
                     item['vol_ok'] = v_ok
                     item['vol_msg'] = v_msg
             
-            return (symbol, scanner_data, diagnostic, is_valid_signal, trend_bullish)
+            return (symbol, scanner_data, diagnostic, is_valid_signal, True)
 
         except Exception as e:
             logger.error(f"Error scanning {symbol}: {e}")
@@ -1070,6 +1086,34 @@ async def strategy_loop():
             # [RESET] Check for new day immediately
             await daily_reset_if_needed()
             
+            # [SAFETY] Global Protection Check (-4R Daily, -8R Strategy)
+            all_trades_today = await db.get_all_trades_desc(limit=50) # Approx
+            r_total_today = 0.0
+            r_total_strategy = 0.0 # Could calculate from all, but focus on recent or paper performance
+            
+            today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            for t_old in all_trades_today:
+                 if t_old['status'] == 'closed':
+                      dist_old = abs(t_old['entry_price'] - t_old['sl']) if t_old['sl'] > 0 else 0
+                      # Reconstruct initial risk: (dist / entry) * used_usd
+                      init_risk = (dist_old / t_old['entry_price']) * t_old['used_usd'] if t_old['entry_price'] > 0 else 0
+                      r_val = t_old['pnl'] / init_risk if init_risk > 0 else 0
+                      
+                      if today_str in t_old['time']:
+                           r_total_today += r_val
+                      r_total_strategy += r_val
+
+            if r_total_today <= DAILY_LOSS_LIMIT_R:
+                 logger.warning(f"🔋 [CIRCUIT BREAKER] Daily R-Total {r_total_today:.1f} <= {DAILY_LOSS_LIMIT_R}. Trading paused for today.")
+                 await asyncio.sleep(3600)
+                 continue
+            
+            if r_total_strategy <= STRATEGY_DEATH_LIMIT_R:
+                 logger.critical(f"💀 [STRATEGY DEATH] Total drawdown {r_total_strategy:.1f}R hits limit. Disabling Bot.")
+                 await db.set_state_key("auto_trading", False)
+                 await asyncio.sleep(3600)
+                 continue
+
             state = await get_app_state()
             if not state.get("auto_trading") or state.get("kill_switch"):
                 await asyncio.sleep(5)
@@ -1087,73 +1131,108 @@ async def strategy_loop():
             #      await asyncio.sleep(60)
             #      continue
             
-            # [STRATEGY RESET] 1. Market Regime - REMOVED (User Request)
-            # We assume Bullish unless Time Filter hits.
-            market_trend_label = "Bullish"
-            market_trend_score = 100
-            
-            # 1. Fetch all tickers
+            # [SCAN] 2. BTC Regime Gate & Universe
+            # A. Fetch BTC 1H for Regime
             try:
-                tickers = await ex_live.fetch_tickers()
+                # [BTC GATE] Optimized History Fetch (400 candles for best trend alignment)
+                # This window (400h) yields a Bullish cross matching user visuals
+                btc_ohlcv_1h = await ex_live.fetch_ohlcv("BTC/USDT", "1h", limit=400)
+
+                if not btc_ohlcv_1h or len(btc_ohlcv_1h) < 200:
+                    logger.warning(f"BTC Gate: Insufficient 1H data ({len(btc_ohlcv_1h)}/200). Skipping.")
+                    await asyncio.sleep(60)
+                    continue
+                
+                # Analyze BTC
+                btc_ana = StrategyManager.get_btc_analysis(btc_ohlcv_1h)
+                
+                # [DEBUG TIMESTAMP]
+                first_t = pd.to_datetime(btc_ohlcv_1h[0][0], unit='ms')
+                last_t = pd.to_datetime(btc_ohlcv_1h[-1][0], unit='ms')
+                logger.debug(f"[BTC DATA] Count: {len(btc_ohlcv_1h)}, Start: {first_t}, End: {last_t}")
+
+                # Gate Logic:
+                # Strict Filter: BTC 1H EMA 50 MUST be above EMA 200 for a valid Uptrend Regime
+                if not (btc_ana['close_gt_ema200'] and btc_ana['ema50_gt_ema200'] and btc_ana['rsi_gt_50']):
+                     market_trend_score = 0
+                     market_trend_label = "Bearish/Neutral (Gate Closed)"
+                     logger.info(f"🚫 [BTC GATE BLOCK] {btc_ana['reason']}")
+                     await asyncio.sleep(60)
+                     continue
+                
+                market_trend_score = 100
+                market_trend_label = "Bullish (Gate Open)"
+                btc_pct = btc_ana['pct_change']
+
             except Exception as e:
-                logger.error(f"[SCAN ERROR] Fetch tickers failed: {e}")
-                await asyncio.sleep(10)
+                logger.error(f"BTC Gate Error: {e}")
+                btc_pct = 0.0
+                await asyncio.sleep(60)
                 continue
 
-            # 2. Filter and Sort
-            all_candidates = []
+            # B. Universe Restriction
+            top_gainers = ALLOWED_SYMBOLS 
             
-            # [STRATEGY] Fetch BTC % Change for Relative Strength Comparison
-            btc_ticker = await safe_fetch_ticker("BTC/USDT")
-            btc_pct = float(btc_ticker['percentage'] or 0) if btc_ticker else 0
-            
-            for s, t in tickers.items():
-                if "/USDT" in s:
-                    base = s.split('/')[0]
-                    if base not in ignored and s != 'BTC/USDT':
-                        # [STRATEGY] Relative Strength Filter (24h Change)
-                        # Pick assets outperforming BTC over the last 24h
-                        asset_pct = float(t['percentage'] or 0)
-                        if asset_pct > btc_pct:
-                             all_candidates.append(t)
-            
-            all_candidates.sort(key=lambda x: float(x['percentage'] or 0), reverse=True)
-            top_gainers = [t['symbol'] for t in all_candidates[:35]] # Focus on Top 35 Leaders 
+            # [HARDENING] Periodic Market Reload
+            global last_market_reload
+            now_ts = datetime.now().timestamp()
+            if now_ts - last_market_reload > 7200: # Every 2 hours
+                 try:
+                      await ex_live.load_markets()
+                      last_market_reload = now_ts
+                      logger.info("📡 [EXCHANGE] Markets reloaded and synced.")
+                 except Exception as e:
+                      logger.warning(f"Failed to reload markets: {e}")
+
+            # Fetch Tickers for context
+            try:
+                tickers = await ex_live.fetch_tickers()
+                async with err_lock:
+                    global consecutive_api_errors
+                    consecutive_api_errors = 0 # Reset on success
+                btc_ticker = tickers.get("BTC/USDT", {})
+                btc_pct = float(btc_ticker.get('percentage', 0))
+            except:
+                btc_pct = 0.0
             
             open_trades = await db.get_open_trades()
-            active_strats = [t['strategy'] for t in open_trades] # Not strictly needed inside scan, but good for context if needed later
+            active_strats = ["EMA_Pullback"]
             
             # ---------------------------------------------------------
-            # MARKET INTELLIGENCE (Aligned with Trading Logic)
+            # MARKET INTELLIGENCE (BTC Directional Gate Active)
             # ---------------------------------------------------------
-            # [FIX] Force Bullish (User removed filter)
+            market_trend_label = "Bullish"
+            market_trend_score = 100
             btc_regime = "bullish"
-            btc_multiplier = 1.0
             
-            # ---------------------------------------------------------
-            # PARALLEL EXECUTION: SMC
-            # ---------------------------------------------------------
-            
-            # [RULE] Global Market Condition: BTC 1H Candle Range > 2%
-            # If (High - Low) / Open > 0.02, BLOCK ALL TRADES
-            try:
-                 btc_candles = await ex_live.fetch_ohlcv("BTC/USDT", "1h", limit=5)
-                 if btc_candles:
-                     last_btc = btc_candles[-1] # [ts, o, h, l, c, v]
-                     # Check range
-                     rng = (last_btc[2] - last_btc[3]) / last_btc[1]
-                     if rng > 0.02:
-                         logger.warning(f"🛑 [VOLATILITY BLOCK] BTC 1H Range {rng*100:.2f}% > 2%. Stopping Scan.")
-                         # Clear candidates to skip
-                         top_gainers = []
-            except Exception as e:
-                logger.error(f"[BTC CHECK FAIL] {e}")
-
             # Context Object for passing BTC data
             scan_context = {"btc_pct": btc_pct}
 
-            # We fetch all candidates in parallel
-            smc_tasks = [scan_smc_target(s, ex_live, scan_context) for s in top_gainers]
+            # We fetch all candidates in parallel with a Semaphore
+            smc_tasks = []
+            
+            async def scan_with_data_fetch(s):
+                 """Parallel wrapper to fetch data and then scan."""
+                 async with scanner_semaphore:
+                     try:
+                        ctx = {
+                            "btc_pct": btc_pct,
+                            "ohlcv_1h": await ex_live.fetch_ohlcv(s, "1h", limit=200),
+                            "symbol_pct_change": float(tickers.get(s, {}).get('percentage', 0))
+                        }
+                        # Reset error counter on successful OHLCV fetch
+                        async with err_lock:
+                            global consecutive_api_errors
+                            consecutive_api_errors = 0
+                            
+                        return await scan_smc_target(s, ex_live, active_strats, context=ctx)
+                     except Exception as e:
+                        logger.error(f"Failed parallel scan for {s}: {e}")
+                        return (s, None, None, False, False)
+
+            for s in top_gainers:
+                 smc_tasks.append(scan_with_data_fetch(s))
+
             smc_results = await asyncio.gather(*smc_tasks)
             
             new_smc_cache = []
@@ -1177,10 +1256,7 @@ async def strategy_loop():
                     trigger_type = diag.get('trigger', 'SMC')
                     strategy_name = f"SMC_{trigger_type}"
                     
-                    if btc_multiplier > 0:
-                        await execute_buy(sym, None, None, strategy_name, sl_absolute=sl_abs, btc_multiplier=btc_multiplier)
-                    else:
-                        logger.info(f"🛑 [REGIME BLOCK] {sym}: Signal ignored due to Bearish BTC Regime")
+                    await execute_buy(sym, None, None, strategy_name, sl_absolute=sl_abs)
                 
                 # [VISIBILITY] Log Rejections (User Assurance)
                 elif diag and "reason" in diag:
@@ -1216,7 +1292,7 @@ async def strategy_loop():
                     market_trend_score = raw
                     market_trend_label = "Bullish"
             
-            logger.info(f"📈 [MARKET TREND] Score: {market_trend_score}/100 ({market_trend_label}) | Regime: {btc_regime} ({btc_multiplier}x)")
+            logger.info(f"📈 [MARKET TREND] Score: {market_trend_score}/100 ({market_trend_label}) | Regime: {btc_regime}")
 
             # ---------------------------------------------------------
             # END OF LOOP
@@ -1241,7 +1317,7 @@ async def stats():
     all_trades = await db.get_all_trades_desc(limit=500)
     closed = [t for t in all_trades if t['status'] == 'closed']
     wins = [t for t in closed if t['pnl'] > 0]
-    total_realized_pnl = sum(t['pnl'] for t in closed)
+    total_realized_pnl = state.get("total_realized_pnl", 0.0) # [FIX] Real-time from state
     
     # [NEW] Unrealized PnL from open trades
     open_trades = await db.get_open_trades()
@@ -1287,17 +1363,18 @@ async def get_signals():
 async def get_history(symbol: str, interval: str = "15m"):
     """Fetch primitive OHLCV history for custom charts"""
     try:
-        if symbol.lower() == "btc/usdt":
-             ohlcv = await ex_live.fetch_ohlcv(symbol, interval, limit=200)
-        else:
-             # Use the same exchange instance as strategy
-             ohlcv = await ex_live.fetch_ohlcv(symbol, interval, limit=200)
+        # Standardize to 400 for BTC to match gate logic and ensure visual alignment
+        limit = 400 if symbol.upper() == "BTC/USDT" else 400
+        ohlcv = await ex_live.fetch_ohlcv(symbol, interval, limit=limit)
              
-
-        # Convert to Pandas for Indicators
+        if not ohlcv:
+            return []
         df_hist = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
-        df_hist['ema5'] = df_hist['close'].ewm(span=5, adjust=False).mean() # [NEW] EMA 5
+        
+        # [NEW] Discipline Strategy EMAs
+        df_hist['ema20'] = df_hist['close'].ewm(span=20, adjust=False).mean()
         df_hist['ema50'] = df_hist['close'].ewm(span=50, adjust=False).mean()
+        df_hist['ema200'] = df_hist['close'].ewm(span=200, adjust=False).mean()
 
         # [NEW] Simple RSI Calc
         delta = df_hist['close'].diff()
@@ -1307,8 +1384,9 @@ async def get_history(symbol: str, interval: str = "15m"):
         df_hist['rsi'] = 100 - (100 / (1 + rs))
 
         candles = []
-        ema5 = [] # [NEW]
+        ema20 = []
         ema50 = []
+        ema200 = []
         rsi = []
 
         for i, row in df_hist.iterrows():
@@ -1321,23 +1399,25 @@ async def get_history(symbol: str, interval: str = "15m"):
                 "close": row['close']
             })
             
-            if not pd.isna(row['ema5']):
-                ema5.append({"time": t_sec, "value": row['ema5']})
+            if not pd.isna(row['ema20']):
+                ema20.append({"time": t_sec, "value": row['ema20']})
             if not pd.isna(row['ema50']):
                 ema50.append({"time": t_sec, "value": row['ema50']})
+            if not pd.isna(row['ema200']):
+                ema200.append({"time": t_sec, "value": row['ema200']})
             if not pd.isna(row['rsi']):
                 rsi.append({"time": t_sec, "value": row['rsi']})
 
         return {
             "candles": candles,
-            "ema20": ema5, # Hack: Send EMA 5 in the "ema20" slot for now to keep frontend working
-            "ema5": ema5,  # Send correct key too for future update
+            "ema20": ema20,
             "ema50": ema50,
+            "ema200": ema200,
             "rsi": rsi
         }
     except Exception as e:
         logger.error(f"History fetch error: {e}")
-        return {"candles": [], "ema20": [], "ema50": [], "rsi": []}
+        return {"candles": [], "ema20": [], "ema50": [], "ema200": [], "rsi": []}
 
 @app.get("/smc-scanner", dependencies=[Depends(get_current_user)])
 async def get_smc_scanner():
