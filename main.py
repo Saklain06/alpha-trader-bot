@@ -244,6 +244,20 @@ async def startup():
 
     asyncio.create_task(watcher_loop())
     asyncio.create_task(strategy_loop())
+    asyncio.create_task(render_keepalive_loop())
+
+async def render_keepalive_loop():
+    """Pings the external Render URL every 8 minutes to prevent free-tier spin-down."""
+    external_url = os.environ.get("RENDER_EXTERNAL_URL", "https://alpha-trader-bot-py42.onrender.com")
+    while True:
+        await asyncio.sleep(480)  # 8 minutes
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{external_url}/dashboard/", timeout=10) as resp:
+                    logger.debug(f"💓 [KEEPALIVE] Pinged {external_url}/dashboard/ -> {resp.status}")
+        except Exception as e:
+            logger.debug(f"[KEEPALIVE WARN] {e}")
 
 # ------------------------
 # UTILS
