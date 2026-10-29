@@ -323,8 +323,16 @@ class StrategyManager:
             elif high_idx + 1 < i and float(np.min(lows[high_idx + 1 : i])) <= fib_0146:
                 already_consumed = True
 
-        is_valid = (not sl_passed) and (not already_consumed) and (impulse_pct >= min_impulse_pct)
-        if sl_passed:
+        # Check if candle data is stale (delisted / halted coin like HFT/USDT)
+        last_ts = int(timestamps[-1])
+        last_ts_sec = int(last_ts / 1000) if last_ts > 10_000_000_000 else last_ts
+        import time as _time
+        is_delisted_stale = (_time.time() - last_ts_sec) > (6 * 3600)
+
+        is_valid = (not is_delisted_stale) and (not sl_passed) and (not already_consumed) and (impulse_pct >= min_impulse_pct)
+        if is_delisted_stale:
+            status = "DELISTED / HALTED ON BINANCE"
+        elif sl_passed:
             status = "INVALIDATED (Price Passed 0 SL)"
         elif already_consumed:
             status = "CONSUMED (0.146 Already Tested)"

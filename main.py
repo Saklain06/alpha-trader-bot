@@ -244,20 +244,6 @@ async def startup():
 
     asyncio.create_task(watcher_loop())
     asyncio.create_task(strategy_loop())
-    asyncio.create_task(render_keepalive_loop())
-
-async def render_keepalive_loop():
-    """Pings the external Render URL every 8 minutes to prevent free-tier spin-down."""
-    external_url = os.environ.get("RENDER_EXTERNAL_URL", "https://alpha-trader-bot-py42.onrender.com")
-    while True:
-        await asyncio.sleep(480)  # 8 minutes
-        try:
-            import aiohttp
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{external_url}/dashboard/", timeout=10) as resp:
-                    logger.debug(f"💓 [KEEPALIVE] Pinged {external_url}/dashboard/ -> {resp.status}")
-        except Exception as e:
-            logger.debug(f"[KEEPALIVE WARN] {e}")
 
 # ------------------------
 # UTILS
@@ -1213,13 +1199,22 @@ async def strategy_loop():
                 btc_pct = float(btc_ticker.get('percentage', 0))
                 
                 # [TOP GAINERS FILTER FOR FIBONACCI BIG MOVES]
-                # Filter for active Top Gainers (> $2M 24h volume to avoid illiquid books, sorted by highest 24h % gain)
+                # Filter for LIVE ACTIVE Spot Top Gainers (excludes delisted/halted "BREAK" coins like HFT/USDT)
+                now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
                 valid_tickers = []
                 for sym, t in tickers.items():
                     stablecoins = ['USDC', 'TUSD', 'FDUSD', 'USD1', 'EUR', 'XUSD', 'RLUSD', 'USDE', 'BUSD', 'PAXG']
                     is_stablecoin = any(s in sym for s in stablecoins)
                     if sym.endswith('/USDT') and 'UP/' not in sym and 'DOWN/' not in sym and not is_stablecoin:
                         try:
+                            mkt = ex_live.markets.get(sym)
+                            if not mkt or not mkt.get('active') or not mkt.get('spot'):
+                                continue
+                            if mkt.get('info', {}).get('status', 'TRADING') != 'TRADING':
+                                continue
+                            t_ts = int(t.get('timestamp') or 0)
+                            if t_ts > 0 and (now_ms - t_ts) > 600_000:  # Must have traded in the last 10 minutes
+                                continue
                             pct = float(t.get('percentage', 0))
                             vol = float(t.get('quoteVolume', 0))
                             if vol >= 2000000 and pct > 0.0:
