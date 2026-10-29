@@ -1,5 +1,6 @@
 import aiosqlite
 import json
+import asyncio # [NEW]
 
 from datetime import date
 from typing import Dict, List, Optional, Any
@@ -10,13 +11,24 @@ class Database:
     def __init__(self, db_file=DB_FILE):
         self.db_file = db_file
 
+    async def _execute_with_retry(self, func, *args, **kwargs):
+        """Helper to retry DB operations if they are locked."""
+        for i in range(3):
+            try:
+                return await func(*args, **kwargs)
+            except Exception as e:
+                if "locked" in str(e).lower() and i < 2:
+                    await asyncio.sleep(0.5 * (i + 1))
+                    continue
+                raise e
+
     async def init_db(self):
         async with aiosqlite.connect(self.db_file) as db:
             # [HARDENING] Enable WAL mode for concurrency
-            await db.execute("PRAGMA journal_mode=WAL;")
+            await self._execute_with_retry(db.execute, "PRAGMA journal_mode=WAL;")
             
             # Create trades table
-            await db.execute("""
+            await self._execute_with_retry(db.execute, """
                 CREATE TABLE IF NOT EXISTS trades (
                     id TEXT PRIMARY KEY,
                     time TEXT,
@@ -63,6 +75,39 @@ class Database:
                 CREATE TABLE IF NOT EXISTS app_state (
                     key TEXT PRIMARY KEY,
                     value TEXT
+                )
+            """)
+
+            # [NEW] TradingAgents Debate Log Table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS agent_debates (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    time TEXT,
+                    symbol TEXT,
+                    strategy TEXT,
+                    approved INTEGER,
+                    bull_score INTEGER,
+                    bear_score INTEGER,
+                    bull_thesis TEXT,
+                    bear_thesis TEXT,
+                    verdict TEXT
+                )
+            """)
+
+            # [NEW] TradingAgents Post-Trade Reflector Memory Table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS trade_reflections (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trade_id TEXT,
+                    time TEXT,
+                    symbol TEXT,
+                    strategy TEXT,
+                    outcome TEXT,
+                    pnl REAL,
+                    pct_move REAL,
+                    hold_mins REAL,
+                    exit_reason TEXT,
+                    lesson TEXT
                 )
             """)
             await db.commit()
@@ -165,10 +210,88 @@ class Database:
     async def set_state_key(self, key: str, value: Any):
         async with aiosqlite.connect(self.db_file) as db:
             val_str = json.dumps(value)
-            await db.execute(
+            await self._execute_with_retry(db.execute,
                 "INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)",
                 (key, val_str)
             )
             await db.commit()
+
+    # ------------------
+    # AGENT DEBATES & REFLECTOR MEMORY
+    # ------------------
+    async def add_agent_debate(self, debate: Dict[str, Any]):
+        async with aiosqlite.connect(self.db_file) as db:
+            await self._execute_with_retry(
+                db.execute,
+                """
+                INSERT INTO agent_debates
+                (time, symbol, strategy, approved, bull_score, bear_score, bull_thesis, bear_thesis, verdict)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    debate.get("time"),
+                    debate.get("symbol"),
+                    debate.get("strategy"),
+                    debate.get("approved", 0),
+                    debate.get("bull_score", 0),
+                    debate.get("bear_score", 0),
+                    debate.get("bull_thesis", ""),
+                    debate.get("bear_thesis", ""),
+                    debate.get("verdict", ""),
+                ),
+            )
+            await db.commit()
+
+    async def get_recent_debates(self, limit: int = 30) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_file) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM agent_debates ORDER BY id DESC LIMIT ?", (limit,)
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def add_trade_reflection(self, reflection: Dict[str, Any]):
+        async with aiosqlite.connect(self.db_file) as db:
+            await self._execute_with_retry(
+                db.execute,
+                """
+                INSERT INTO trade_reflections
+                (trade_id, time, symbol, strategy, outcome, pnl, pct_move, hold_mins, exit_reason, lesson)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    reflection.get("trade_id"),
+                    reflection.get("time"),
+                    reflection.get("symbol"),
+                    reflection.get("strategy"),
+                    reflection.get("outcome"),
+                    reflection.get("pnl", 0.0),
+                    reflection.get("pct_move", 0.0),
+                    reflection.get("hold_mins", 0.0),
+                    reflection.get("exit_reason", ""),
+                    reflection.get("lesson", ""),
+                ),
+            )
+            await db.commit()
+
+    async def get_reflections_for_symbol(self, symbol: str, limit: int = 5) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_file) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM trade_reflections WHERE symbol = ? ORDER BY id DESC LIMIT ?",
+                (symbol, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_recent_reflections(self, limit: int = 30) -> List[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_file) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                "SELECT * FROM trade_reflections ORDER BY id DESC LIMIT ?", (limit,)
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]
 
 db = Database()

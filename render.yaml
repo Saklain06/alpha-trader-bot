@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: alpha-trader-bot
+    runtime: python
+    region: singapore
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: TRADE_MODE
+        value: paper
+      - key: BASE_BALANCE
+        value: "800"
+      - key: MAX_POSITION_COUNT
+        value: "2"
+      - key: MAX_ORDER_USD
+        value: "2000"
+      - key: MAX_SYMBOL_EXPOSURE_USD
+        value: "2000"

@@ -31,6 +31,10 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout 
          throw new Error("Unauthorized");
       }
 
+      if (!response.ok) {
+         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
       return response;
    } catch (error) {
       clearTimeout(id);
@@ -55,25 +59,23 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
    const chartContainerRef = useRef<HTMLDivElement>(null);
    const chartRef = useRef<any>(null);
    const seriesRef = useRef<any>(null);
-   const ema5Ref = useRef<any>(null); // [NEW] EMA 5
-   const ema50Ref = useRef<any>(null);
-   const rsiRef = useRef<any>(null);
+   const fibDiagonalRef = useRef<any>(null);
+   const fibLinesRef = useRef<any[]>([]);
+   const [fibInfo, setFibInfo] = useState<any>(null);
    const [error, setError] = useState<string | null>(null);
    const [timeLeft, setTimeLeft] = useState<string>("--:--");
 
-   // ... (Helper & Timer unchanged)
-
-   // 1. Initialize Chart
+   // 1. Initialize Chart (Clean Candlesticks + Fibonacci Only)
    useEffect(() => {
       if (!chartContainerRef.current) return;
 
       const chart = createChart(chartContainerRef.current, {
          layout: {
             background: { type: ColorType.Solid, color: isDark ? '#131722' : '#ffffff' },
-            textColor: isDark ? '#d1d4dc' : '#334155', // slate-700
+            textColor: isDark ? '#d1d4dc' : '#334155',
          },
          grid: {
-            vertLines: { color: isDark ? 'rgba(43, 43, 67, 0.4)' : '#e2e8f0', style: 1 }, // slate-200
+            vertLines: { color: isDark ? 'rgba(43, 43, 67, 0.4)' : '#e2e8f0', style: 1 },
             horzLines: { color: isDark ? 'rgba(43, 43, 67, 0.4)' : '#e2e8f0', style: 1 },
          },
          width: chartContainerRef.current.clientWidth,
@@ -81,7 +83,7 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
          timeScale: {
             timeVisible: true,
             secondsVisible: false,
-            rightOffset: 40,
+            rightOffset: 16,
             tickMarkFormatter: (time: number) => {
                const date = new Date(time * 1000);
                return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -89,37 +91,36 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
          }
       });
 
-      // Symbol Watermark
       chart.applyOptions({
          watermark: {
             visible: true,
             fontSize: 72,
             horzAlign: 'center',
             vertAlign: 'center',
-            color: 'rgba(255, 255, 255, 0.06)',
+            color: 'rgba(255, 255, 255, 0.05)',
             text: symbol,
          },
          crosshair: {
-            mode: 1, // Magnet
+            mode: 1,
             vertLine: {
                width: 1,
-               color: 'rgba(224, 227, 235, 0.1)',
-               style: 3, // Dashed
-               labelBackgroundColor: '#9B7DFF',
+               color: 'rgba(224, 227, 235, 0.15)',
+               style: 3,
+               labelBackgroundColor: '#475569',
             },
             horzLine: {
                width: 1,
-               color: 'rgba(224, 227, 235, 0.1)',
+               color: 'rgba(224, 227, 235, 0.15)',
                style: 3,
-               labelBackgroundColor: '#9B7DFF',
+               labelBackgroundColor: '#475569',
             }
          }
       } as any);
 
       chart.priceScale('right').applyOptions({
          scaleMargins: {
-            top: 0.1,
-            bottom: 0.25,
+            top: 0.08,
+            bottom: 0.08,
          },
       });
 
@@ -131,35 +132,19 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
          wickDownColor: '#F23645'
       });
 
-      // EMA 5 (Cyan / Fast)
-      const ema5 = chart.addSeries(LineSeries, { color: '#06B6D4', lineWidth: 2, crosshairMarkerVisible: false, priceScaleId: 'right', title: 'EMA 5' });
-      // EMA 50 (Blue / Slow)
-      const ema50 = chart.addSeries(LineSeries, { color: '#3B82F6', lineWidth: 2, crosshairMarkerVisible: false, priceScaleId: 'right', title: 'EMA 50' });
-
-      // RSI Series (Bottom Pane)
-      const rsiSeries = chart.addSeries(LineSeries, {
-         color: '#A78BFA', // Purple
+      // Diagonal Fibonacci Impulse Line (0 Swing Low -> 1 Swing High)
+      const fibDiagonal = chart.addSeries(LineSeries, {
+         color: 'rgba(148, 163, 184, 0.65)',
          lineWidth: 1,
-         priceScaleId: 'rsi',
-         crosshairMarkerVisible: false
+         lineStyle: 2, // Dashed diagonal like TradingView Fib
+         crosshairMarkerVisible: false,
+         lastValueVisible: false,
+         priceLineVisible: false,
       });
-
-      chart.priceScale('rsi').applyOptions({
-         scaleMargins: {
-            top: 0.75, // Bottom 25%
-            bottom: 0,
-         },
-      });
-
-      // RSI Levels
-      rsiSeries.createPriceLine({ price: 65, color: 'rgba(16, 185, 129, 0.5)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '65' });
-      rsiSeries.createPriceLine({ price: 40, color: 'rgba(16, 185, 129, 0.5)', lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: '40' });
 
       chartRef.current = chart;
       seriesRef.current = candlestickSeries;
-      ema5Ref.current = ema5; // [NEW]
-      ema50Ref.current = ema50;
-      rsiRef.current = rsiSeries;
+      fibDiagonalRef.current = fibDiagonal;
 
       const handleResize = () => {
          if (chartContainerRef.current) {
@@ -174,13 +159,12 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
          chart.remove();
          chartRef.current = null;
          seriesRef.current = null;
-         ema5Ref.current = null; // [NEW]
-         ema50Ref.current = null;
-         rsiRef.current = null;
+         fibDiagonalRef.current = null;
+         fibLinesRef.current = [];
       };
    }, [isDark, symbol]);
 
-   // 2. Fetch Data
+   // 2. Fetch Data & Draw Fibonacci (0, 0.146, 0.438, 1)
    useEffect(() => {
       if (!seriesRef.current) return;
 
@@ -189,29 +173,80 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
 
       const fetchHistory = async () => {
          try {
-            // [PROXY FIX] Use relative path /api for data fetching (goes through Nginx)
-            // [FIX] Always use /api for Nginx consistency
             const apiBase = "/api";
-
-            const res = await fetch(`${apiBase}/history?symbol=${symbol}&interval=${interval}`);
+            const res = await fetch(`${apiBase}/history?symbol=${encodeURIComponent(symbol)}&interval=${interval}`);
+            if (!res.ok) return;
             const json = await res.json();
             if (!isMounted) return;
 
-            // Handle new response structure { candles, ema20, ema50 }
             const candles = json.candles || json;
-
             if (Array.isArray(candles) && candles.length > 0) {
                seriesRef.current.setData(candles);
 
-               // Handle EMA 5 data (Backend sends 'ema5' and legacy 'ema20')
-               if (ema5Ref.current) {
-                  const data = json.ema5 || json.ema20;
-                  if (data) ema5Ref.current.setData(data);
+               // Clear previous Fib price lines
+               if (fibLinesRef.current.length > 0 && seriesRef.current) {
+                  fibLinesRef.current.forEach((l: any) => {
+                     try { seriesRef.current.removePriceLine(l); } catch {}
+                  });
+                  fibLinesRef.current = [];
                }
-               if (ema50Ref.current && json.ema50) ema50Ref.current.setData(json.ema50);
-               if (rsiRef.current && json.rsi) rsiRef.current.setData(json.rsi);
 
-               // Only fit content on the very first load for this symbol/interval
+               // Render Fibonacci (0, 0.146, 0.438, 1) ONLY if setup is still valid (price hasn't passed 0 SL or consumed 0.146)
+               if (json.fib && json.fib.fib_0 && json.fib.fib_1) {
+                  const f = json.fib;
+                  setFibInfo(f);
+
+                  if (f.valid) {
+                     // Draw diagonal anchor line from Swing Low (0) to Swing High (1)
+                     if (fibDiagonalRef.current && f.low_time && f.high_time && f.low_time < f.high_time) {
+                        fibDiagonalRef.current.setData([
+                           { time: f.low_time, value: f.fib_0 },
+                           { time: f.high_time, value: f.fib_1 },
+                        ]);
+                     }
+
+                     const newFibLines = [
+                        seriesRef.current.createPriceLine({
+                           price: f.fib_1,
+                           color: '#94A3B8', // Slate-400 (Fib 1 High)
+                           lineWidth: 1,
+                           lineStyle: 0,
+                           axisLabelVisible: true,
+                           title: `1 (${Number(f.fib_1).toPrecision(5)})`,
+                        }),
+                        seriesRef.current.createPriceLine({
+                           price: f.fib_0438,
+                           color: '#10B981', // Emerald-500 (Fib 0.438 Trail Trigger)
+                           lineWidth: 2,
+                           lineStyle: 0,
+                           axisLabelVisible: true,
+                           title: `0.438 TRAIL (${Number(f.fib_0438).toPrecision(5)})`,
+                        }),
+                        seriesRef.current.createPriceLine({
+                           price: f.fib_0146,
+                           color: '#EF4444', // Red-500 (Fib 0.146 Entry)
+                           lineWidth: 2,
+                           lineStyle: 0,
+                           axisLabelVisible: true,
+                           title: `0.146 ENTRY (${Number(f.fib_0146).toPrecision(5)})`,
+                        }),
+                        seriesRef.current.createPriceLine({
+                           price: f.fib_0,
+                           color: '#CBD5E1', // Slate-300 (Fib 0 SL)
+                           lineWidth: 1,
+                           lineStyle: 0,
+                           axisLabelVisible: true,
+                           title: `0 SL (${Number(f.fib_0).toPrecision(5)})`,
+                        }),
+                     ];
+                     fibLinesRef.current = newFibLines;
+                  } else if (fibDiagonalRef.current) {
+                     fibDiagonalRef.current.setData([]);
+                  }
+               } else {
+                  setFibInfo(null);
+               }
+
                if (isFirstLoad) {
                   chartRef.current?.timeScale().fitContent();
                   isFirstLoad = false;
@@ -224,8 +259,8 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
          }
       };
 
-      fetchHistory(); // Immediate load
-      const intervalId = setInterval(fetchHistory, 5000); // Poll every 5s
+      fetchHistory();
+      const intervalId = setInterval(fetchHistory, 5000);
 
       return () => {
          isMounted = false;
@@ -233,69 +268,73 @@ const SmartChart = ({ symbol, interval, isDark, ob, position }: { symbol: string
       };
    }, [symbol, interval]);
 
-   // Use JSON.stringify or specific props to avoid ref-check triggering
-   const obSignature = ob ? `${ob.top}-${ob.bottom}-${ob.fvg?.top}` : 'null';
-
-   // 3. (Optional) Any specific overlays for EMA/Price actions can go here
-   // Currently, lines are drawn via refs in the init effect. 
-   // This effect is kept empty or removed if no dynamic overlay needed.
-   // 3. Position Overlays (SL/TP)
+   // 3. Position Overlays (Active Trade Entry / SL / TP)
    useEffect(() => {
       if (!seriesRef.current || !position) return;
 
       const lines: any[] = [];
 
-      // ENTRY
       if (position.entry_price) {
          lines.push(seriesRef.current.createPriceLine({
             price: position.entry_price,
-            color: '#3B82F6', // Blue
+            color: '#3B82F6',
             lineWidth: 1,
-            lineStyle: 2, // Dashed
+            lineStyle: 2,
             axisLabelVisible: true,
-            title: 'ENTRY',
+            title: 'OPEN ENTRY',
          }));
       }
 
-      // STOP LOSS
       if (position.sl) {
          lines.push(seriesRef.current.createPriceLine({
             price: position.sl,
-            color: '#EF4444', // Red
+            color: '#EF4444',
             lineWidth: 1,
-            lineStyle: 2, // Dashed
+            lineStyle: 2,
             axisLabelVisible: true,
-            title: 'SL',
+            title: 'OPEN SL',
          }));
       }
 
-      // TAKE PROFIT
       if (position.tp) {
          lines.push(seriesRef.current.createPriceLine({
             price: position.tp,
-            color: '#10B981', // Green
+            color: '#10B981',
             lineWidth: 1,
-            lineStyle: 2, // Dashed
+            lineStyle: 2,
             axisLabelVisible: true,
-            title: 'TP',
+            title: 'OPEN TP',
          }));
       }
 
       return () => {
          if (seriesRef.current) {
-            lines.forEach((l: any) => seriesRef.current.removePriceLine(l));
+            lines.forEach((l: any) => {
+               try { seriesRef.current.removePriceLine(l); } catch {}
+            });
          }
       };
    }, [position, symbol]);
 
    return (
       <div className="w-full h-full relative" ref={chartContainerRef}>
-
-
-
-
-
-
+         {fibInfo && (
+            <div className="absolute top-3 left-3 z-20 flex flex-wrap items-center gap-3 bg-slate-900/85 backdrop-blur-md text-xs font-mono px-3 py-2 rounded-xl border border-white/10 shadow-lg pointer-events-none">
+               <span className="font-bold text-indigo-400">FIB (0 / 0.146 / 0.438 / 1)</span>
+               {fibInfo.valid ? (
+                  <>
+                     <span className="text-emerald-400 font-bold">● ACTIVE</span>
+                     <span className="text-slate-400">Impulse: <b className="text-white">+{fibInfo.impulse_pct}%</b></span>
+                     <span className="text-slate-300">0 (SL): <b>{Number(fibInfo.fib_0).toPrecision(5)}</b></span>
+                     <span className="text-red-400">0.146 (Entry): <b>{Number(fibInfo.fib_0146).toPrecision(5)}</b></span>
+                     <span className="text-emerald-400">0.438 (Trail +2R): <b>{Number(fibInfo.fib_0438).toPrecision(5)}</b></span>
+                     <span className="text-slate-400">1 (High): <b>{Number(fibInfo.fib_1).toPrecision(5)}</b></span>
+                  </>
+               ) : (
+                  <span className="text-amber-400 font-bold">⚠️ NO ENTRY — {fibInfo.status}</span>
+               )}
+            </div>
+         )}
          <div className="absolute bottom-8 right-[50px] z-20 bg-[#131722]/80 backdrop-blur text-white text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded border border-white/10 shadow pointer-events-none">
             {timeLeft}
          </div>
@@ -327,7 +366,7 @@ export default function Dashboard() {
 
    // [NEW] Chart Modal State
    const [selectedCoin, setSelectedCoin] = useState<string | null>(null);
-   const [chartInterval, setChartInterval] = useState<string>("15m");
+   const [chartInterval, setChartInterval] = useState<string>("1h");
 
    const initialized = useRef(false);
    const [lastSync, setLastSync] = useState<string>("—");
@@ -561,8 +600,8 @@ export default function Dashboard() {
 
                      <div className="flex items-center gap-4">
                         {smcScanner.find(s => s.symbol === selectedCoin) && (
-                           <span className="text-xs bg-emerald-500/20 text-emerald-500 px-2 py-1 rounded border border-emerald-500/20">
-                              OB: {smcScanner.find(s => s.symbol === selectedCoin).top} - {smcScanner.find(s => s.symbol === selectedCoin).bottom}
+                           <span className="text-xs bg-emerald-500/20 text-emerald-400 px-2.5 py-1 rounded border border-emerald-500/20 font-mono">
+                              Fib 0.146: {Number(smcScanner.find(s => s.symbol === selectedCoin).fib_0146 || 0).toPrecision(5)} → 0.438 TP: {Number(smcScanner.find(s => s.symbol === selectedCoin).fib_0438 || 0).toPrecision(5)}
                            </span>
                         )}
                         <button
@@ -789,8 +828,8 @@ export default function Dashboard() {
                      {/* Scanner Header */}
                      <div className="flex items-center justify-between mb-2">
                         <div>
-                           <h3 className="text-lg font-bold mb-2">Growth Strategy Scanner (15m-EMA)</h3>
-                           <p className="text-[10px] opacity-50 mb-4">Top Assets &gt; BTC Strength (15m)</p>
+                           <h3 className="text-lg font-bold mb-1">Top Gainers Fib Scanner (15m)</h3>
+                           <p className="text-[10px] opacity-50 mb-4">Fibonacci (0 / 0.146 Entry / 0.438 TP / 1)</p>
                         </div>
                         <div className="flex gap-2"></div>
                      </div>
@@ -800,9 +839,9 @@ export default function Dashboard() {
                               <tr>
                                  <th className="px-1 py-2 text-left">Coin</th>
                                  <th className="px-1 py-2 text-right">Price</th>
-                                 <th className="px-1 py-2 text-right">EMA 20</th>
-                                 <th className="px-1 py-2 text-right">EMA 50</th>
-                                 <th className="px-1 py-2 text-right">RSI</th>
+                                 <th className="px-1 py-2 text-right">0.146 Entry</th>
+                                 <th className="px-1 py-2 text-right">0.438 TP</th>
+                                 <th className="px-1 py-2 text-right">Impulse</th>
                               </tr>
                            </thead>
                            <tbody className="divide-y divide-white/5">
@@ -812,11 +851,11 @@ export default function Dashboard() {
                               {smcScanner.map((s, i) => (
                                  <tr key={i} className={`transition-colors cursor-pointer ${isDark ? "hover:bg-white/5" : "hover:bg-slate-50 border-b border-slate-50"}`} onClick={() => setSelectedCoin(s.symbol)}>
                                     <td className="px-1 py-2 font-bold truncate max-w-[60px]">{s.symbol.split('/')[0]}</td>
-                                    <td className="px-1 py-2 text-right font-mono">{Number(s.price).toFixed(4)}</td>
-                                    <td className="px-1 py-2 text-right font-mono text-yellow-500">{Number(s.ema20).toFixed(4)}</td>
-                                    <td className="px-1 py-2 text-right font-mono text-blue-500">{Number(s.ema50).toFixed(4)}</td>
-                                    <td className={`px-1 py-2 text-right font-mono font-bold ${s.rsi >= 40 && s.rsi <= 65 ? "text-emerald-500" : "opacity-30"}`}>
-                                       {s.rsi ? Number(s.rsi).toFixed(1) : "--"}
+                                    <td className="px-1 py-2 text-right font-mono">{Number(s.price || 0).toPrecision(5)}</td>
+                                    <td className="px-1 py-2 text-right font-mono text-red-400">{s.fib_0146 ? Number(s.fib_0146).toPrecision(5) : "--"}</td>
+                                    <td className="px-1 py-2 text-right font-mono text-emerald-400">{s.fib_0438 ? Number(s.fib_0438).toPrecision(5) : "--"}</td>
+                                    <td className={`px-1 py-2 text-right font-mono font-bold ${(s.impulse_pct || 0) >= 5.0 ? "text-emerald-500" : "opacity-40"}`}>
+                                       {s.impulse_pct ? `+${Number(s.impulse_pct).toFixed(1)}%` : "--"}
                                     </td>
                                  </tr>
                               ))}
