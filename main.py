@@ -168,11 +168,21 @@ async def strip_api_prefix(request, call_next):
 
 @app.get("/debug-status")
 async def debug_status():
+    import requests as _rq
+    tests = {}
+    for h in ["data-api.binance.vision", "api1.binance.com", "api2.binance.com", "api3.binance.com", "api.binance.com"]:
+        try:
+            r = _rq.get(f"https://{h}/api/v3/ping", timeout=3)
+            tests[h] = f"HTTP {r.status_code}"
+        except Exception as e:
+            tests[h] = str(e)[:40]
+
     return {
         "server_time": datetime.now(timezone.utc).isoformat(),
         "last_loop_ts": str(last_loop_ts),
         "last_loop_error": str(last_loop_error),
         "btc_gate_debug": last_btc_gate_debug,
+        "endpoint_tests": tests,
         "markets_count": len(ex_live.markets) if hasattr(ex_live, "markets") and ex_live.markets else 0,
         "last_top_gainers_count": len(last_top_gainers),
         "last_top_gainers": last_top_gainers[:5],
