@@ -140,22 +140,6 @@ last_loop_ts = None
 last_loop_error = None
 last_top_gainers = []
 
-@app.get("/debug-status")
-async def debug_status():
-    return {
-        "server_time": datetime.now(timezone.utc).isoformat(),
-        "last_loop_ts": str(last_loop_ts),
-        "last_loop_error": str(last_loop_error),
-        "last_top_gainers_count": len(last_top_gainers),
-        "last_top_gainers": last_top_gainers[:5],
-        "scanner_cache_count": len(smc_scanner_cache),
-        "near_hits_count": len(near_hits),
-        "market_trend_score": market_trend_score,
-        "market_trend_label": market_trend_label,
-        "consecutive_api_errors": consecutive_api_errors,
-        "pause_until_ts": pause_until_ts,
-    }
-
 # ------------------------
 # GLOBAL STATE
 # ------------------------
@@ -180,6 +164,22 @@ async def strip_api_prefix(request, call_next):
     if request.scope.get("path", "").startswith("/api/"):
         request.scope["path"] = request.scope["path"][4:] or "/"
     return await call_next(request)
+
+@app.get("/debug-status")
+async def debug_status():
+    return {
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "last_loop_ts": str(last_loop_ts),
+        "last_loop_error": str(last_loop_error),
+        "last_top_gainers_count": len(last_top_gainers),
+        "last_top_gainers": last_top_gainers[:5],
+        "scanner_cache_count": len(smc_scanner_cache),
+        "near_hits_count": len(near_hits),
+        "market_trend_score": market_trend_score,
+        "market_trend_label": market_trend_label,
+        "consecutive_api_errors": consecutive_api_errors,
+        "pause_until_ts": pause_until_ts,
+    }
 
 # ------------------------
 # AUTHENTICATION LOGIC
