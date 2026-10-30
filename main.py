@@ -139,6 +139,7 @@ def min_notional_ok(symbol, usd):
 last_loop_ts = None
 last_loop_error = None
 last_top_gainers = []
+last_btc_gate_debug = "Not started"
 
 # ------------------------
 # GLOBAL STATE
@@ -171,6 +172,8 @@ async def debug_status():
         "server_time": datetime.now(timezone.utc).isoformat(),
         "last_loop_ts": str(last_loop_ts),
         "last_loop_error": str(last_loop_error),
+        "btc_gate_debug": last_btc_gate_debug,
+        "markets_count": len(ex_live.markets) if hasattr(ex_live, "markets") and ex_live.markets else 0,
         "last_top_gainers_count": len(last_top_gainers),
         "last_top_gainers": last_top_gainers[:5],
         "scanner_cache_count": len(smc_scanner_cache),
@@ -1129,12 +1132,13 @@ async def strategy_loop():
                "SAPIEN", "DATA", "FTT", "BTTC", "GUN"] 
     global smc_scanner_cache
     global market_trend_score, market_trend_label
-    global last_loop_ts, last_loop_error, last_top_gainers
+    global last_loop_ts, last_loop_error, last_top_gainers, last_btc_gate_debug
     
     while True:
         try:
             start_ts = datetime.now()
             last_loop_ts = start_ts.isoformat()
+            last_btc_gate_debug = f"Loop started at {start_ts.isoformat()}"
             logger.info(f"[DEBUG] Loop Cycle Start {start_ts}")
             # [SAFETY] Periodic Sync
             await sync_portfolio_with_exchange()
@@ -1192,15 +1196,18 @@ async def strategy_loop():
             try:
                 # [BTC GATE] Optimized History Fetch (400 candles for best trend alignment)
                 # This window (400h) yields a Bullish cross matching user visuals
+                last_btc_gate_debug = "Fetching BTC 1h..."
                 btc_ohlcv_1h = await ex_live.fetch_ohlcv("BTC/USDT", "1h", limit=400)
 
                 if not btc_ohlcv_1h or len(btc_ohlcv_1h) < 200:
+                    last_btc_gate_debug = f"Insufficient BTC data ({len(btc_ohlcv_1h) if btc_ohlcv_1h else 0}/200)"
                     logger.warning(f"BTC Gate: Insufficient 1H data ({len(btc_ohlcv_1h)}/200). Skipping.")
                     await asyncio.sleep(60)
                     continue
                 
                 # Analyze BTC
                 btc_ana = StrategyManager.get_btc_analysis(btc_ohlcv_1h)
+                last_btc_gate_debug = f"BTC RSI: {btc_ana.get('rsi', 0):.1f}"
                 
                 # [DEBUG TIMESTAMP]
                 first_t = pd.to_datetime(btc_ohlcv_1h[0][0], unit='ms')
@@ -1212,6 +1219,7 @@ async def strategy_loop():
                 if btc_ana.get('rsi', 50) < 30:
                      market_trend_score = 0
                      market_trend_label = "Extreme Crash (Gate Closed)"
+                     last_btc_gate_debug = f"BTC Crash Blocked (RSI {btc_ana.get('rsi', 0):.1f} < 30)"
                      logger.info(f"🚫 [BTC CRASH BLOCK] {btc_ana['reason']}")
                      await asyncio.sleep(60)
                      continue
@@ -1219,8 +1227,10 @@ async def strategy_loop():
                 market_trend_score = 100 if (btc_ana['close_gt_ema200'] and btc_ana['ema50_gt_ema200']) else 65
                 market_trend_label = "Bullish (Top Gainers Active)" if market_trend_score == 100 else "Neutral (Top Gainers Active)"
                 btc_pct = btc_ana['pct_change']
+                last_btc_gate_debug = f"BTC Gate OK (RSI {btc_ana.get('rsi', 0):.1f})"
 
             except Exception as e:
+                last_btc_gate_debug = f"BTC Gate Error: {e}"
                 logger.error(f"BTC Gate Error: {e}")
                 btc_pct = 0.0
                 await asyncio.sleep(60)
