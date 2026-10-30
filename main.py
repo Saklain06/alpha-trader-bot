@@ -136,6 +136,26 @@ def min_notional_ok(symbol, usd):
     return usd >= cost_min
 
 
+last_loop_ts = None
+last_loop_error = None
+last_top_gainers = []
+
+@app.get("/api/debug-status")
+async def debug_status():
+    return {
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "last_loop_ts": str(last_loop_ts),
+        "last_loop_error": str(last_loop_error),
+        "last_top_gainers_count": len(last_top_gainers),
+        "last_top_gainers": last_top_gainers[:5],
+        "scanner_cache_count": len(smc_scanner_cache),
+        "near_hits_count": len(near_hits),
+        "market_trend_score": market_trend_score,
+        "market_trend_label": market_trend_label,
+        "consecutive_api_errors": consecutive_api_errors,
+        "pause_until_ts": pause_until_ts,
+    }
+
 # ------------------------
 # GLOBAL STATE
 # ------------------------
@@ -1109,10 +1129,12 @@ async def strategy_loop():
                "SAPIEN", "DATA", "FTT", "BTTC", "GUN"] 
     global smc_scanner_cache
     global market_trend_score, market_trend_label
+    global last_loop_ts, last_loop_error, last_top_gainers
     
     while True:
         try:
             start_ts = datetime.now()
+            last_loop_ts = start_ts.isoformat()
             logger.info(f"[DEBUG] Loop Cycle Start {start_ts}")
             # [SAFETY] Periodic Sync
             await sync_portfolio_with_exchange()
@@ -1243,10 +1265,12 @@ async def strategy_loop():
                 if not top_gainers:
                     top_gainers = ALLOWED_SYMBOLS
                 
+                last_top_gainers = top_gainers
             except Exception as e:
                 logger.warning(f"Ticker filter error: {e}")
                 btc_pct = 0.0
                 top_gainers = ALLOWED_SYMBOLS # Fallback
+                last_top_gainers = top_gainers
             
             open_trades = await db.get_open_trades()
             active_strats = ["EMA_Pullback"]
@@ -1356,6 +1380,7 @@ async def strategy_loop():
             logger.info(f"[SCANNER] Cycle complete in {duration:.2f}s.")
             
         except Exception as e:
+            last_loop_error = str(e)
             logger.exception("Strategy loop crashed")
         
         await asyncio.sleep(STRATEGY_INTERVAL)
