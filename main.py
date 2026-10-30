@@ -244,6 +244,21 @@ async def startup():
 
     asyncio.create_task(watcher_loop())
     asyncio.create_task(strategy_loop())
+    asyncio.create_task(render_keepalive_loop())
+
+async def render_keepalive_loop():
+    """Pings the external Render URL every 5 minutes to prevent free-tier spin-down."""
+    external_url = os.environ.get("RENDER_EXTERNAL_URL", "https://alpha-trader-bot-py42.onrender.com")
+    logger.info(f"💓 [KEEPALIVE] Keepalive loop started for {external_url}")
+    while True:
+        await asyncio.sleep(300)  # 5 minutes
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{external_url}/api/history?symbol=BTC/USDT&interval=1h", timeout=15) as resp:
+                    logger.info(f"💓 [KEEPALIVE] Self-ping status {resp.status}")
+        except Exception as e:
+            logger.warning(f"⚠️ [KEEPALIVE] Self-ping error: {e}")
 
 # ------------------------
 # UTILS
