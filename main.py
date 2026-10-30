@@ -140,7 +140,7 @@ last_loop_ts = None
 last_loop_error = None
 last_top_gainers = []
 
-@app.get("/api/debug-status")
+@app.get("/debug-status")
 async def debug_status():
     return {
         "server_time": datetime.now(timezone.utc).isoformat(),
