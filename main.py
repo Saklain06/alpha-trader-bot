@@ -187,7 +187,12 @@ async def debug_status():
         "last_top_gainers_count": len(last_top_gainers),
         "last_top_gainers": last_top_gainers[:5],
         "scanner_cache_count": len(smc_scanner_cache),
+        "scanner_cache": smc_scanner_cache[:5],
         "near_hits_count": len(near_hits),
+        "recent_diagnostics": [
+            {"symbol": x.get("symbol"), "reason": x.get("reason"), "impulse_pct": x.get("impulse_pct")}
+            for x in near_hits[:10]
+        ],
         "market_trend_score": market_trend_score,
         "market_trend_label": market_trend_label,
         "consecutive_api_errors": consecutive_api_errors,
