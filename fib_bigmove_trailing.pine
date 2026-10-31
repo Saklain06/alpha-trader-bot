@@ -1,0 +1,173 @@
+//@version=5
+strategy("Big-Move Launchpad Fib (0 / 0.146 / 0.438 / 1) + Trail SL", overlay=true, 
+         initial_capital=800, default_qty_type=strategy.cash, default_qty_value=400, 
+         commission_type=strategy.commission.percent, commission_value=0.10, 
+         slippage=1, process_orders_on_close=false)
+
+// ==============================================================================
+// 1. INPUTS & CONFIGURATION
+// ==============================================================================
+var G_STRAT = "1. Strategy Settings"
+lookback_window   = input.int(40, "Peak Search Lookback (Bars)", minval=15, maxval=100, group=G_STRAT, 
+                              tooltip="Bars to search for the highest breakout peak")
+max_impulse_bars  = input.int(15, "Max Impulse Expansion Bars", minval=3, maxval=30, group=G_STRAT, 
+                              tooltip="Maximum bars between the launchpad base and the breakout peak")
+min_impulse_pct   = input.float(8.0, "Min Impulse Move (%)", minval=2.0, step=0.5, group=G_STRAT, 
+                              tooltip="Minimum impulsive breakout percentage (High - Low) / Low * 100")
+use_rejection     = input.bool(true, "Require Rejection Confirmation (Sniper)", group=G_STRAT,
+                              tooltip="Requires green close OR >=30% lower absorption wick at 0.146 zone")
+
+var G_EXIT = "2. Trailing SL Settings (Strategy 2)"
+trail_lock_r      = input.float(1.6, "Lock SL Floor at +2R (+R)", step=0.1, group=G_EXIT, 
+                              tooltip="When 0.438 (+2.0R) is hit, SL instantly locks at this profit level")
+trail_dist_r      = input.float(0.5, "Trail Distance Behind High (+R)", step=0.1, group=G_EXIT, 
+                              tooltip="SL ratchets up maintaining this distance in R behind the highest price reached")
+
+var G_VIS = "3. Visual Styling"
+show_fib_lines    = input.bool(true, "Show Active Fib Levels", group=G_VIS)
+show_trail_line   = input.bool(true, "Plot Live Trailing SL Line", group=G_VIS)
+
+// ==============================================================================
+// 2. BIG-MOVE LAUNCHPAD ANCHOR DETECTION
+// ==============================================================================
+// Find the highest high in the search window (excluding current bar)
+int peak_rel = 1
+float highest_p = high[1]
+for b = 1 to lookback_window
+    if high[b] > highest_p
+        highest_p := high[b]
+        peak_rel := b
+
+// Peak must have formed at least 2 bars ago so a pullback could begin
+bool valid_peak = peak_rel >= 2 and peak_rel < lookback_window
+
+// Search for the lowest low up to max_impulse_bars before the peak
+int raw_low_rel = peak_rel + 1
+float raw_lowest_p = low[raw_low_rel]
+int max_low_search = math.min(lookback_window, peak_rel + max_impulse_bars)
+
+if valid_peak
+    for b = peak_rel + 1 to max_low_search
+        if low[b] < raw_lowest_p
+            raw_lowest_p := low[b]
+            raw_low_rel := b
+
+// Walk forward across flat base consolidation bars to find the exact launchpad candle
+int base_low_rel = raw_low_rel
+float raw_rng = highest_p - raw_lowest_p
+if valid_peak and raw_lowest_p > 0 and raw_rng > 0
+    float low_ceil = raw_lowest_p + (0.08 * raw_rng)
+    float close_ceil = raw_lowest_p + (0.20 * raw_rng)
+    // Walk forward toward peak
+    for b = raw_low_rel - 1 to peak_rel + 1
+        if low[b] <= low_ceil and close[b] <= close_ceil
+            base_low_rel := b
+        else
+            break
+
+float swing_low  = low[base_low_rel]
+float swing_high = high[peak_rel]
+float impulse_rng = swing_high - swing_low
+float impulse_pct = swing_low > 0 ? (impulse_rng / swing_low) * 100.0 : 0.0
+
+// ==============================================================================
+// 3. FIBONACCI LEVEL COMPUTATION
+// ==============================================================================
+float fib_0    = swing_low
+float fib_0146 = swing_low + 0.146 * impulse_rng
+float fib_0438 = swing_low + 0.438 * impulse_rng
+float fib_1    = swing_high
+float risk_dist = fib_0146 - fib_0  // 1.0R distance
+
+// Invalidation checks between peak and previous bar
+bool peak_broken   = false
+bool sl_passed     = false
+bool prior_tested  = false
+
+if valid_peak and peak_rel > 1
+    for b = 1 to peak_rel - 1
+        if high[b] > fib_1
+            peak_broken := true
+        if low[b] <= fib_0
+            sl_passed := true
+        if b > 1 and low[b] <= fib_0146
+            prior_tested := true
+
+bool setup_active = valid_peak and impulse_pct >= min_impulse_pct and not peak_broken and not sl_passed and not prior_tested
+
+// ==============================================================================
+// 4. SNIPER REJECTION ENTRY CONDITION
+// ==============================================================================
+// Rejection check: green candle OR lower absorption wick >= 30% of candle range
+float bar_range   = high - low
+float lower_wick  = math.min(open, close) - low
+bool  is_green    = close >= open
+bool  has_wick    = bar_range > 0 ? (lower_wick / bar_range >= 0.30) : false
+bool  rejection_ok = use_rejection ? (is_green or has_wick) : true
+
+// Touch entry triggers on 0.146 zone with buyer rejection confirmed
+bool entry_touch = setup_active and (close[1] > fib_0146) and (low <= fib_0146 * 1.0025) and (high >= fib_0146) and (low > fib_0) and rejection_ok
+
+// ==============================================================================
+// 5. TRADE EXECUTION & TRAILING STOP-LOSS LOGIC
+// ==============================================================================
+var float trade_entry_price = 0.0
+var float trade_fib_0       = 0.0
+var float trade_fib_0438    = 0.0
+var float trade_risk_dist   = 0.0
+var float trade_highest_p   = 0.0
+var float current_sl        = 0.0
+var bool  trail_active      = false
+
+// Long Entry
+if strategy.position_size == 0 and entry_touch
+    strategy.entry("Long Fib", strategy.long, stop=na, limit=fib_0146, comment="Entry @ 0.146")
+    trade_entry_price := fib_0146
+    trade_fib_0       := fib_0
+    trade_fib_0438    := fib_0438
+    trade_risk_dist   := risk_dist
+    trade_highest_p   := math.max(fib_0146, high)
+    current_sl        := fib_0
+    trail_active      := false
+
+// Manage Active Trade
+if strategy.position_size > 0
+    trade_highest_p := math.max(trade_highest_p, high)
+    
+    // Check if 0.438 (+2.0R) activation target was touched
+    if trade_highest_p >= trade_fib_0438
+        trail_active := true
+        float locked_floor = trade_entry_price + (trail_lock_r * trade_risk_dist)
+        float trail_level  = trade_highest_p - (trail_dist_r * trade_risk_dist)
+        float ratcheted_sl = math.max(current_sl, math.max(locked_floor, trail_level))
+        current_sl := ratcheted_sl
+    
+    // Check for Stop Loss Exit (Initial SL or Ratcheted Trailing SL)
+    if low <= current_sl
+        string exit_comment = trail_active ? "Trailing SL Profit" : "Stop Loss"
+        strategy.close("Long Fib", comment=exit_comment)
+        trade_entry_price := 0.0
+        current_sl := 0.0
+        trail_active := false
+
+// Reset when flat
+if strategy.position_size == 0
+    trade_entry_price := 0.0
+    current_sl := na
+    trail_active := false
+
+// ==============================================================================
+// 6. VISUAL PLOTS & OVERLAYS
+// ==============================================================================
+// Plot active Fibonacci levels when setup is active
+plot(show_fib_lines and setup_active ? fib_1 : na, "Fib 1.0 (Peak)", color=color.new(color.silver, 20), style=plot.style_linebr)
+plot(show_fib_lines and setup_active ? fib_0438 : na, "Fib 0.438 (Trail Trigger)", color=color.new(color.teal, 10), linewidth=2, style=plot.style_linebr)
+plot(show_fib_lines and setup_active ? fib_0146 : na, "Fib 0.146 (Touch Entry)", color=color.new(color.red, 10), linewidth=2, style=plot.style_linebr)
+plot(show_fib_lines and setup_active ? fib_0 : na, "Fib 0.0 (Launchpad Base / SL)", color=color.new(color.gray, 20), style=plot.style_linebr)
+
+// Plot dynamic trailing SL when in a trade
+plot(show_trail_line and strategy.position_size > 0 ? current_sl : na, "Active Stop Loss / Trailing SL", 
+     color=trail_active ? color.lime : color.orange, linewidth=2, style=plot.style_linebr)
+
+// Background color alert on active setup
+bgcolor(setup_active and strategy.position_size == 0 ? color.new(color.blue, 93) : na, title="Setup Active")

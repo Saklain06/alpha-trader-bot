@@ -172,13 +172,14 @@ class StrategyManager:
         n = len(df)
         lookback_window = 40
         max_impulse_bars = 15
-        min_impulse_pct = 6.0  # Minimum 6.0% 1H big-move impulse
+        min_impulse_pct = 8.0  # Upgraded: Minimum 8.0% clean power move impulse
 
         if n < lookback_window + 3:
             return False, {"reason": "Insufficient 1H history for Big-Move Fibonacci"}
 
         highs = df["high"].astype(float).values
         lows = df["low"].astype(float).values
+        opens = df["open"].astype(float).values
         closes = df["close"].astype(float).values
         timestamps = df["ts"].values
 
@@ -232,9 +233,11 @@ class StrategyManager:
                 StrategyManager.consumed_fib_swings.add(swing_key)
                 return False, {"reason": "Previous candle already consumed Fib 0.146 pullback"}
 
-        # Live Touch Check (no waiting for 1H candle close!)
+        # Live Touch & Rejection Confirmation Check (Sniper Upgrade)
         live_price = float(closes[i])
         live_low = float(lows[i])
+        live_high = float(highs[i])
+        live_open = float(opens[i])
         prev_close = float(closes[i - 1])
 
         if prev_close <= fib_0146:
@@ -243,8 +246,26 @@ class StrategyManager:
 
         dist_to_0146_pct = ((live_price - fib_0146) / fib_0146) * 100.0 if fib_0146 > 0 else 99.0
 
-        # Trigger instant entry when live price pulls back down to <= 0.146 (with 0.25% touch tolerance) and stays > Fib 0 (SL)
-        if live_low <= (fib_0146 * 1.0025) and live_price > (fib_0 * 1.001) and live_price <= (fib_0146 * 1.005):
+        # Buyer Rejection Confirmation:
+        # Candle is green (close >= open) OR lower wick is >= 30% of total candle range (buyer absorption)
+        candle_range = live_high - live_low
+        lower_wick = min(live_open, live_price) - live_low
+        is_green = live_price >= live_open
+        has_wick_rejection = (lower_wick / candle_range >= 0.30) if candle_range > 0 else False
+        rejection_confirmed = is_green or has_wick_rejection
+
+        # Trigger entry when live price reaches 0.146 zone AND buyers reject lower prices
+        if live_low <= (fib_0146 * 1.0025) and live_price > (fib_0 * 1.001) and live_price <= (fib_0146 * 1.008):
+            if not rejection_confirmed:
+                return False, {
+                    "reason": f"At 0.146 ({live_price:.4g}): Waiting for buyer rejection confirmation (green close or absorption wick)",
+                    "fib_0": round(fib_0, 8),
+                    "fib_0146": round(fib_0146, 8),
+                    "fib_0438": round(fib_0438, 8),
+                    "fib_1": round(fib_1, 8),
+                    "impulse_pct": round(impulse_pct, 2),
+                }
+
             StrategyManager.consumed_fib_swings.add(swing_key)
             return True, {
                 "signal": "long",
@@ -256,9 +277,9 @@ class StrategyManager:
                 "fib_0438": round(fib_0438, 8),
                 "fib_1": round(fib_1, 8),
                 "impulse_pct": round(impulse_pct, 2),
-                "trigger": "Fib_0146_BigMove_Trail",
+                "trigger": "Fib_0146_Sniper_Rejection_Trail",
                 "reason": (
-                    f"1H Big-Move 0.146 Touch Entry (Impulse +{impulse_pct:.1f}% | "
+                    f"1H Big-Move 0.146 Sniper Entry (Impulse +{impulse_pct:.1f}% | Rejection Confirmed | "
                     f"Entry {live_price:.4g} | SL(0) {fib_0:.4g} | Trail Trigger(0.438) {fib_0438:.4g})"
                 ),
             }
@@ -276,7 +297,7 @@ class StrategyManager:
         }
 
     @staticmethod
-    def compute_fib_levels(df: pd.DataFrame, lookback_window: int = 40, min_impulse_pct: float = 6.0):
+    def compute_fib_levels(df: pd.DataFrame, lookback_window: int = 40, min_impulse_pct: float = 8.0):
         """
         Computes the active Big-Move Launchpad Fibonacci (0, 0.146, 0.438, 1) levels on a DataFrame of candles.
         Marks the setup as invalid if price after the Peak (1) already passed 0 (SL)
@@ -373,7 +394,7 @@ class StrategyManager:
 
         df = analysis["df"]
         last = df.iloc[-1]
-        fib = StrategyManager.compute_fib_levels(df, lookback_window=40, min_impulse_pct=6.0)
+        fib = StrategyManager.compute_fib_levels(df, lookback_window=40, min_impulse_pct=8.0)
         if not fib or not fib.get("valid"):
             return []
 
