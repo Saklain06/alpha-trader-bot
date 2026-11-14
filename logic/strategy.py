@@ -172,7 +172,7 @@ class StrategyManager:
         n = len(df)
         lookback_window = 40
         max_impulse_bars = 15
-        min_impulse_pct = 8.0  # Upgraded: Minimum 8.0% clean power move impulse
+        min_impulse_pct = 6.0  # Calibrated: Minimum 6.0% clean power move impulse
 
         if n < lookback_window + 3:
             return False, {"reason": "Insufficient 1H history for Big-Move Fibonacci"}
@@ -297,7 +297,7 @@ class StrategyManager:
         }
 
     @staticmethod
-    def compute_fib_levels(df: pd.DataFrame, lookback_window: int = 40, min_impulse_pct: float = 8.0):
+    def compute_fib_levels(df: pd.DataFrame, lookback_window: int = 40, min_impulse_pct: float = 6.0):
         """
         Computes the active Big-Move Launchpad Fibonacci (0, 0.146, 0.438, 1) levels on a DataFrame of candles.
         Marks the setup as invalid if price after the Peak (1) already passed 0 (SL)

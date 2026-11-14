@@ -750,6 +750,11 @@ async def execute_buy(symbol, sl_pct, tp_pct, strategy, sl_absolute=None, tp_abs
         logger.info(f"🚀 [+30% STEP-UP UNLOCKED] Equity reached ${equity:.2f} -> New Slot Size: ${step_tier_base / MAX_POSITION_COUNT:.2f}")
 
     _, usd = calculate_position_limits(equity, locked, free, len(open_trades), step_tier_base=step_tier_base)
+    global market_trend_label
+    if market_trend_label == "Defensive Crash Mode":
+        usd = round(usd * 0.5, 2)
+        logger.info(f"🛡️ [DEFENSIVE SIZING] Market is in Crash Mode -> Halved Slot Size: ${usd:.2f}")
+
     logger.info(
         f"⚖️ [2-SLOT SIZING] {symbol} | Equity: ${equity:.2f} | Free: ${free:.2f} | "
         f"Open Slots: {len(open_trades)}/{MAX_POSITION_COUNT} | Slot Size: ${usd:.2f}"
@@ -1081,6 +1086,9 @@ async def watcher_loop():
                     t_tp = float(t.get('tp') or 0.0)
                     entry_p = float(t.get('entry_price') or price)
 
+                    # -------------------------------------------------------------
+                    # MASTER 3-STEP HYBRID TRAILING EXECUTION ENGINE
+                    # -------------------------------------------------------------
                     # 1. STOP LOSS / TRAILING STOP EXIT (Immediate Live Touch)
                     if t_sl > 0 and price <= t_sl:
                         if t.get("trail_active") or t_sl > entry_p:
@@ -1091,21 +1099,41 @@ async def watcher_loop():
                             await execute_sell(t['id'], 100, "stop_loss")
                         continue
 
-                    # 2. TRAILING SL ACTIVATION & RATCHET AT 0.438 (+2.0R)
-                    # Since 0.438 - 0.146 = 0.292 = 2 * 0.146, (t_tp - entry_p) / 2.0 is always exact 1R
                     one_r = (t_tp - entry_p) / 2.0 if t_tp > entry_p else abs(entry_p - t_sl)
-                    if t_tp > 0 and one_r > 0 and highest >= t_tp:
-                        locked_floor = entry_p + (1.6 * one_r)  # Lock +1.6R immediately at 0.438
-                        trail_level = highest - (0.5 * one_r)   # Trail 0.5R behind highest_price
-                        new_sl = round(max(t_sl, locked_floor, trail_level), 8)
-                        updates["trail_active"] = True
-                        updates["trail_sl"] = new_sl
-                        if new_sl > t_sl:
-                            updates["sl"] = new_sl
+                    if one_r > 0:
+                        # STEP 1: BREAK-EVEN ACTIVATION AT +1.0R (Fib 0.292)
+                        # Eliminates full loss: moves SL to Entry + 0.20R (covers Binance fees)
+                        if highest >= (entry_p + one_r) and t_sl < (entry_p + 0.20 * one_r):
+                            be_sl = round(entry_p + (0.20 * one_r), 8)
+                            updates["sl"] = be_sl
+                            updates["trail_active"] = True
+                            t_sl = be_sl
                             logger.info(
-                                f"📈 [TRAIL SL RATCHET] {symbol} | High {highest:.6g} >= 0.438 ({t_tp:.6g}) | "
-                                f"SL locked/trailed: {t_sl:.6g} -> {new_sl:.6g}"
+                                f"🛡️ [BREAK-EVEN ACTIVE] {symbol} | High {highest:.6g} >= +1R ({entry_p + one_r:.6g}) | "
+                                f"SL moved to Break-Even: {be_sl:.6g}"
                             )
+
+                        # STEP 2: BANK 50% PROFIT AT +2.0R (Fib 0.438) via Limit/Market
+                        if highest >= t_tp and not t.get("half_banked"):
+                            updates["half_banked"] = True
+                            logger.info(
+                                f"💰 [BANK 50% PROFIT] {symbol} @ {price:.6g} >= 0.438 Target ({t_tp:.6g}). Selling 50%!"
+                            )
+                            await execute_sell(t['id'], 50.0, "half_bank_0438")
+
+                        # STEP 3: TRAIL REMAINING 50% RUNNER WITH 0.75R BUFFER
+                        if highest >= t_tp:
+                            trail_floor = entry_p + (1.0 * one_r)
+                            trail_level = highest - (0.75 * one_r)
+                            new_sl = round(max(t_sl, trail_floor, trail_level), 8)
+                            updates["trail_active"] = True
+                            updates["trail_sl"] = new_sl
+                            if new_sl > t_sl:
+                                updates["sl"] = new_sl
+                                logger.info(
+                                    f"📈 [TRAIL SL RATCHET] {symbol} | High {highest:.6g} >= 0.438 ({t_tp:.6g}) | "
+                                    f"SL locked/trailed: {t_sl:.6g} -> {new_sl:.6g}"
+                                )
 
                     await db.update_trade(t['id'], updates)
 
@@ -1151,6 +1179,29 @@ async def scan_smc_target(symbol, ex, active_strategies, context=None):
 
             # Check Signal with 1H Big-Move Launchpad Fibonacci Touch Logic
             is_valid_signal, diagnostic = StrategyManager.check_signal(symbol, ohlcv_1h, context)
+
+            # [HTF 4H / 1D MACRO CONFLUENCE CHECK]
+            # Validates that pullback is a healthy 4H/1D discount, not a death spiral
+            if is_valid_signal and diagnostic:
+                try:
+                    t_1d = await ex.fetch_ohlcv(symbol, '1d', limit=35)
+                    t_4h = await ex.fetch_ohlcv(symbol, '4h', limit=60)
+                    curr_p = float(diagnostic.get('entry_price') or ohlcv_1h[-1][4])
+                    if t_1d and len(t_1d) >= 30:
+                        min_30d = min(float(c[3]) for c in t_1d[-30:])
+                        if curr_p < min_30d * 1.08:
+                            is_valid_signal = False
+                            diagnostic['reason'] = f"HTF 1D VETO: Price {curr_p:.4g} within 8% of 30D low ({min_30d:.4g}) — death spiral protection"
+                            logger.info(f"🚫 [HTF 1D VETO] {symbol}: {diagnostic['reason']}")
+                    if is_valid_signal and t_4h and len(t_4h) >= 50:
+                        closes_4h = [float(c[4]) for c in t_4h]
+                        ema50_4h = float(pd.Series(closes_4h).ewm(span=50, adjust=False).mean().iloc[-1])
+                        if curr_p < ema50_4h * 0.95:
+                            is_valid_signal = False
+                            diagnostic['reason'] = f"HTF 4H VETO: Price {curr_p:.4g} < 95% of 4H EMA50 ({ema50_4h:.4g}) — macro downtrend protection"
+                            logger.info(f"🚫 [HTF 4H VETO] {symbol}: {diagnostic['reason']}")
+                except Exception as e:
+                    logger.debug(f"HTF check skipped for {symbol}: {e}")
 
             # [TRADINGAGENTS GATE] Pre-Buy Bull vs. Bear Debate & Risk Judge
             if is_valid_signal and diagnostic:
@@ -1278,20 +1329,19 @@ async def strategy_loop():
                 last_t = pd.to_datetime(btc_ohlcv_1h[-1][0], unit='ms')
                 logger.debug(f"[BTC DATA] Count: {len(btc_ohlcv_1h)}, Start: {first_t}, End: {last_t}")
 
-                # Gate Logic for Top Gainers:
-                # Top Gainers have independent momentum; only block if BTC is in extreme crash (1H RSI < 30)
+                # Gate Logic for Multi-Bucket Momentum:
+                # If BTC is in deep crash (1H RSI < 30), adapt to Defensive Crash Mode (Half-sizing $200) instead of shutting down
                 if btc_ana.get('rsi', 50) < 30:
-                     market_trend_score = 0
-                     market_trend_label = "Extreme Crash (Gate Closed)"
-                     last_btc_gate_debug = f"BTC Crash Blocked (RSI {btc_ana.get('rsi', 0):.1f} < 30)"
-                     logger.info(f"🚫 [BTC CRASH BLOCK] {btc_ana['reason']}")
-                     await asyncio.sleep(60)
-                     continue
+                     market_trend_score = 40
+                     market_trend_label = "Defensive Crash Mode"
+                     last_btc_gate_debug = f"Defensive Crash Mode (BTC RSI {btc_ana.get('rsi', 0):.1f} < 30 | Half-Sizing Active)"
+                     logger.info(f"🛡️ [DEFENSIVE REGIME] BTC RSI {btc_ana.get('rsi', 0):.1f} < 30. Halving slot size to protect against market drag.")
+                else:
+                     market_trend_score = 100 if (btc_ana['close_gt_ema200'] and btc_ana['ema50_gt_ema200']) else 65
+                     market_trend_label = "Bullish" if market_trend_score == 100 else "Neutral"
+                     last_btc_gate_debug = f"BTC Gate OK (RSI {btc_ana.get('rsi', 0):.1f})"
                 
-                market_trend_score = 100 if (btc_ana['close_gt_ema200'] and btc_ana['ema50_gt_ema200']) else 65
-                market_trend_label = "Bullish (Top Gainers Active)" if market_trend_score == 100 else "Neutral (Top Gainers Active)"
                 btc_pct = btc_ana['pct_change']
-                last_btc_gate_debug = f"BTC Gate OK (RSI {btc_ana.get('rsi', 0):.1f})"
 
             except Exception as e:
                 last_btc_gate_debug = f"BTC Gate Error: {e}"
@@ -1309,8 +1359,7 @@ async def strategy_loop():
                 btc_ticker = tickers.get("BTC/USDT", {})
                 btc_pct = float(btc_ticker.get('percentage', 0))
                 
-                # [TOP GAINERS FILTER FOR FIBONACCI BIG MOVES]
-                # Filter for LIVE ACTIVE Spot Top Gainers (excludes delisted/halted "BREAK" coins like HFT/USDT)
+                # [TRI-BUCKET UNIVERSE SCANNER: GAINERS + LOSERS + VOLUME SPIKES]
                 now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
                 valid_tickers = []
                 for sym, t in tickers.items():
@@ -1328,23 +1377,34 @@ async def strategy_loop():
                                 continue
                             pct = float(t.get('percentage', 0))
                             vol = float(t.get('quoteVolume', 0))
-                            if vol >= 2000000 and pct > 0.0:
+                            if vol >= 3000000:  # Liquid pairs with >= $3M turnover
                                 valid_tickers.append((sym, vol, pct))
                         except:
                             pass
                 
-                # Sort by highest 24h percentage gain (Top Gainers) so we catch big impulsive moves
-                valid_tickers.sort(key=lambda x: x[2], reverse=True)
-                top_gainers = [x[0] for x in valid_tickers[:20]]
-                if not top_gainers:
-                    top_gainers = ALLOWED_SYMBOLS
+                # Bucket 1: Top 15 Gainers (Breakout Continuation)
+                by_gain = sorted(valid_tickers, key=lambda x: x[2], reverse=True)
+                bucket_gainers = [x[0] for x in by_gain[:15]]
+
+                # Bucket 2: Top 15 Losers (Capitulation & 4H/1D Discount Pullbacks)
+                by_loss = sorted(valid_tickers, key=lambda x: x[2])
+                bucket_losers = [x[0] for x in by_loss[:15]]
+
+                # Bucket 3: Top 10 Volume Velocity Spikes (Automating "Random Research")
+                by_vol = sorted(valid_tickers, key=lambda x: x[1], reverse=True)
+                bucket_vol = [x[0] for x in by_vol[:10]]
+
+                # Deduplicated Universe of ~35-40 High-Liquidity Coins
+                candidate_universe = list(dict.fromkeys(bucket_gainers + bucket_losers + bucket_vol))
+                if not candidate_universe:
+                    candidate_universe = ALLOWED_SYMBOLS
                 
-                last_top_gainers = top_gainers
+                last_top_gainers = candidate_universe
             except Exception as e:
                 logger.warning(f"Ticker filter error: {e}")
                 btc_pct = 0.0
-                top_gainers = ALLOWED_SYMBOLS # Fallback
-                last_top_gainers = top_gainers
+                candidate_universe = ALLOWED_SYMBOLS # Fallback
+                last_top_gainers = candidate_universe
             
             open_trades = await db.get_open_trades()
             active_strats = ["EMA_Pullback"]
@@ -1352,9 +1412,9 @@ async def strategy_loop():
             # ---------------------------------------------------------
             # MARKET INTELLIGENCE (BTC Directional Gate Active)
             # ---------------------------------------------------------
-            market_trend_label = "Bullish"
-            market_trend_score = 100
-            btc_regime = "bullish"
+            if market_trend_label != "Defensive Crash Mode":
+                market_trend_label = "Bullish" if market_trend_score >= 80 else "Neutral"
+            btc_regime = "bearish" if market_trend_label == "Defensive Crash Mode" else "bullish"
             
             # Context Object for passing BTC data
             scan_context = {"btc_pct": btc_pct}
@@ -1381,7 +1441,7 @@ async def strategy_loop():
                         logger.error(f"Failed parallel scan for {s}: {e}")
                         return (s, None, None, False, False)
 
-            for s in top_gainers:
+            for s in candidate_universe:
                  smc_tasks.append(scan_with_data_fetch(s))
 
             smc_results = await asyncio.gather(*smc_tasks)
