@@ -1399,11 +1399,13 @@ async def strategy_loop():
                 if not candidate_universe:
                     candidate_universe = ALLOWED_SYMBOLS
                 
+                top_gainers = candidate_universe
                 last_top_gainers = candidate_universe
             except Exception as e:
                 logger.warning(f"Ticker filter error: {e}")
                 btc_pct = 0.0
                 candidate_universe = ALLOWED_SYMBOLS # Fallback
+                top_gainers = candidate_universe
                 last_top_gainers = candidate_universe
             
             open_trades = await db.get_open_trades()
@@ -1479,7 +1481,7 @@ async def strategy_loop():
                 
             # [FIX] Also Scan Active Positions for Dashboard Visualization
             active_symbols = [t['symbol'] for t in open_trades]
-            missing_active = [s for s in active_symbols if s not in top_gainers]
+            missing_active = [s for s in active_symbols if s not in candidate_universe]
             
             if missing_active:
                 active_res = await asyncio.gather(*[scan_smc_target(s, ex_live, active_strats) for s in missing_active])
@@ -1492,10 +1494,12 @@ async def strategy_loop():
             while len(near_hits) > 20: near_hits.pop()
 
             # UI SYNC
-            if len(top_gainers) > 0:
-                raw = int((bullish_count / len(top_gainers)) * 100)
+            if len(candidate_universe) > 0:
+                raw = int((bullish_count / len(candidate_universe)) * 100)
                 
-                if btc_regime == "bearish":
+                if market_trend_label == "Defensive Crash Mode":
+                    pass  # Preserve Defensive Crash Mode and score
+                elif btc_regime == "bearish":
                     market_trend_score = min(raw, 20) 
                     market_trend_label = "Bearish"
                 elif btc_regime == "neutral":

@@ -95,3 +95,4 @@ echo "  View Live Logs: journalctl -u alpha_bot -f"
 echo "  Edit Config:    nano /opt/alpha-trader-bot/.env"
 echo "=========================================================================="
 echo ""
+
