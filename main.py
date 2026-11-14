@@ -199,6 +199,55 @@ async def debug_status():
         "pause_until_ts": pause_until_ts,
     }
 
+@app.get("/performance")
+async def public_performance():
+    """Unauthenticated public audit endpoint for the user to check live results anytime."""
+    equity, locked, free, api_status, api_error = await get_equity_locked_free()
+    all_trades = await db.get_all_trades_desc(limit=100)
+    open_trades = await db.get_open_trades()
+    state = await db.get_state()
+    
+    closed_trades = [t for t in all_trades if t.get('status') == 'closed']
+    wins = [t for t in closed_trades if float(t.get('pnl') or 0.0) > 0]
+    losses = [t for t in closed_trades if float(t.get('pnl') or 0.0) <= 0]
+    total_pnl = float(state.get("total_realized_pnl", 0.0))
+    
+    return {
+        "portfolio_equity": round(equity, 2),
+        "cash_free": round(free, 2),
+        "cash_locked": round(locked, 2),
+        "total_realized_pnl": round(total_pnl, 2),
+        "roi_pct": round((total_pnl / BASE_BALANCE) * 100.0, 2) if BASE_BALANCE > 0 else 0.0,
+        "total_trades": len(closed_trades),
+        "wins": len(wins),
+        "losses": len(losses),
+        "win_rate": f"{(len(wins) / len(closed_trades) * 100):.1f}%" if closed_trades else "0.0%",
+        "open_positions_count": len(open_trades),
+        "open_positions": [
+            {
+                "symbol": t.get("symbol"),
+                "entry_price": t.get("entry_price"),
+                "current_price": t.get("current_price"),
+                "sl": t.get("sl"),
+                "tp": t.get("tp"),
+                "unrealized_pnl": t.get("unrealized_pnl"),
+                "time": t.get("time")
+            }
+            for t in open_trades
+        ],
+        "closed_trades_history": [
+            {
+                "symbol": t.get("symbol"),
+                "entry_price": t.get("entry_price"),
+                "exit_price": t.get("exit_price"),
+                "pnl": t.get("pnl"),
+                "exit_time": t.get("exit_time"),
+                "time": t.get("time")
+            }
+            for t in closed_trades[:20]
+        ]
+    }
+
 # ------------------------
 # AUTHENTICATION LOGIC
 # ------------------------
